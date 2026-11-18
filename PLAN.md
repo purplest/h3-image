@@ -1,8 +1,18 @@
 # h3-image — implementation plan
 
-Status: **awaiting approval** (see §9). Source of truth: `SPEC.md` (committed alongside this
-plan). Where this plan and SPEC.md disagree, SPEC.md wins; where SPEC.md and the original
-reference code disagree, the spec's Part 7 notes apply.
+Status: **in progress** (decisions resolved, see §9). Source of truth: `SPEC.md` (committed
+alongside this plan). Where this plan and SPEC.md disagree, SPEC.md wins; where SPEC.md and
+the original reference code disagree, the spec's Part 7 notes apply.
+
+**Milestone status** (updated 2026-11-19):
+- M0 scaffolding — ✅ committed `15e4a3f` (12 checks)
+- M2 weights, CPU half — ✅ committed `d03763e` (A1 CPU bit-exact vs vendored ggml oracle;
+  GPU convert half lands with M1)
+- M3 layout + host math — ✅ committed `d03763e` (A2 bit-exact vs independent Python vectors;
+  267 checks total, 0 failures on Linux)
+- M1 GPU runtime — next; first Mac sync point covers M1+M2+M3
+  (`test_gpu_ops`, `test_gguf` GPU half, `test_weights`, `test_layout`, real-weight checks)
+- M4–M12 — pending
 
 Target: a single C CLI (`h3-image`, version `0.1.0`) for **Apple Silicon, macOS 15+**,
 rebuilding MiniMax-H3-Image text-to-image and editing exactly as specified: GGUF + official
