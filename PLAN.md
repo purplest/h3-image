@@ -293,11 +293,16 @@ from the spec text**:
 (GPU) / 6.5 GiB (NE). Matmul ≈ 3 TFLOP/s. Streaming hides SSD reads (0.1–0.3 s unhidden).
 Tune in M12 with `bench_gpu` / `profile_dit` / `bench.sh`; targets, not gates.
 
-## 9. Decisions needed before implementation starts
+## 9. Decisions (resolved 2026-11-18)
 
-- **D1 — Mac workflow**: SSH from this box / git sync with you running tests / move session to
-  the Mac. (Blocks all Mac-side gates; Linux-side work can start regardless.)
-- **D2 — Weights**: which sets already exist and where (GGUF ≈24 GiB, official ≈114 GiB), or
-  should we plan downloads (`download.sh gguf` first, 40 GiB free)?
-- **D3 — Target Mac**: macOS version (15+ required for the NE path), chip, RAM (16 GB+ for GGUF).
-- **D4 — Approval**: approve this plan to start M0 (scaffolding) → M1/M2 per the build order.
+- **D1 — Mac workflow**: **Git sync.** Development and commits happen on the Linux box;
+  the user pulls on the Mac, runs `make` / `make test` and pastes results back. The user
+  offered to run any weight-dependent test on request. Mac-side gates are batched into
+  sync points (first: after M1–M3) to keep the async loop efficient; Linux-verifiable
+  work proceeds while a Mac gate is pending.
+- **D2 — Weights**: **both** GGUF set and official BF16 release are already on the Mac.
+  All acceptance tests A1–A14 are runnable; no downloads needed (tools/download.sh still
+  built for completeness). Exact paths on the Mac to be confirmed at first sync point
+  (defaults: `~/models/MiniMax-H3-Image-GGUF`, `~/models/MiniMax-H3-Image`).
+- **D3 — Target Mac**: **macOS 15+** — full plan including the NE path (M11, A13) is viable.
+- **D4 — Approval**: **approved** — start M0, then M1/M2 per the build order.
