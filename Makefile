@@ -14,8 +14,10 @@
 CC = clang
 AR = ar
 
+# FP contraction OFF everywhere: the spec's separately-rounded F32 ops must
+# not fuse; explicit fma() calls still emit FMA (SPEC §1.4, §4.0, §5).
 CFLAGS = -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion \
-         -Wno-sign-conversion -D_DARWIN_C_SOURCE -Isrc
+         -Wno-sign-conversion -ffp-contract=off -D_DARWIN_C_SOURCE -Isrc
 OBJCFLAGS = $(CFLAGS) -fobjc-arc
 FRAMEWORKS = -framework Foundation -framework Metal -framework MetalPerformanceShaders \
              -framework MetalPerformanceShadersGraph -framework Accelerate \
@@ -68,6 +70,13 @@ build/h3i_shaders.metal: src/gpu/shaders.metal src/gpu/kernels.metal
 build/test_%: tests/test_%.c build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
 
+# ggml oracle (A1): contraction fast, same as the Linux core build.
+build/tests/ggml_ref.c.o: tests/ggml_ref.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -ffp-contract=fast -Wno-conversion -c $< -o $@
+
+build/test_gguf: build/tests/ggml_ref.c.o
+
 build/%: tools/%.c build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
 
@@ -94,17 +103,32 @@ clean:
 
 # _XOPEN_SOURCE=700 implies POSIX 2008 and exposes XSI functions (realpath).
 CORE_CFLAGS = -std=c11 -O2 -g -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion \
-              -Wno-sign-conversion -D_XOPEN_SOURCE=700 -Isrc
+              -Wno-sign-conversion -ffp-contract=off -D_XOPEN_SOURCE=700 -Isrc
 CORE_LDLIBS = -lm
+ifeq ($(shell uname -m),x86_64)
+# FMA hardware lets explicit fma() compile to an instruction (still correctly
+# rounded without it); the ggml oracle needs it for contraction parity.
+CORE_CFLAGS += -mfma
+endif
 
-CORE_SRCS = src/app/paths.c
-CORE_TEST_NAMES = test_core
+CORE_SRCS = src/app/paths.c src/io/host.c src/weights/gguf.c src/weights/safetensors.c \
+            src/weights/source.c src/weights/model.c src/model/layout.c
+CORE_TEST_NAMES = test_core test_gguf test_weights test_layout
 CORE_LIB_OBJS = $(patsubst %,build/core/%.o,$(CORE_SRCS))
 CORE_TEST_BINS = $(addprefix build/core/,$(CORE_TEST_NAMES))
 
 build/core/%.c.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_CFLAGS) -c $< -o $@
+
+# The vendored ggml oracle is compiled with contraction FAST so `dl*q - ml`
+# fuses exactly as ggml does on Apple Silicon (tests/ggml_ref.h). Upstream
+# code is verbatim, so its conversion warnings are suppressed.
+build/core/tests/ggml_ref.c.o: tests/ggml_ref.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CORE_CFLAGS) -ffp-contract=fast -Wno-conversion -c $< -o $@
+
+build/core/test_gguf: build/core/tests/ggml_ref.c.o
 
 build/core/test_%: build/core/tests/test_%.c.o $(CORE_LIB_OBJS)
 	$(CC) $(CORE_CFLAGS) -o $@ $^ $(CORE_LDLIBS)
