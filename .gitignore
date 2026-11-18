@@ -53,3 +53,26 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# --- h3-image project ---
+
+# Build tree and binary
+build/
+h3-image
+
+# Generated outputs (images, benchmarks, check-image runs)
+outputs/
+
+# Weights are never committed (live in ~/models)
+models/
+*.gguf
+*.safetensors
+
+# Python tooling
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+.DS_Store
+*.swp
