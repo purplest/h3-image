@@ -44,7 +44,7 @@ all: h3-image build/h3i_shaders.metal
 
 # Library + shaders only: lets the Mac side build and run tests before the
 # CLI (src/app/main.c, milestone M8) exists.
-lib: build/libh3image.a
+lib: build/libh3image.a build/h3i_shaders.metal
 
 build/%.c.o: %.c
 	@mkdir -p $(dir $@)
@@ -68,7 +68,7 @@ build/h3i_shaders.metal: src/gpu/shaders.metal src/gpu/kernels.metal
 	cat src/gpu/shaders.metal src/gpu/kernels.metal > $@
 
 build/test_%: tests/test_%.c build/libh3image.a
-	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # ggml oracle (A1): contraction fast, same as the Linux core build.
 build/tests/ggml_ref.c.o: tests/ggml_ref.c

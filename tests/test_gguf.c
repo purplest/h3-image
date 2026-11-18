@@ -16,6 +16,11 @@
 #include "check.h"
 #include "ggml_ref.h"
 
+#ifdef __APPLE__
+#include "bf16_util.h"
+#include "gpu_test.h"
+#endif
+
 #define TMP "build/test-tmp"
 
 static uint32_t bits_of(float f)
@@ -370,6 +375,88 @@ static void test_real_weights(void)
     h3i_source_free(&s);
 }
 
+#ifdef __APPLE__
+/* A1 GPU half: convert_raw bit-identical to the CPU reference for every
+ * type, with nonzero output/raw offsets. */
+static void test_dequant_gpu(void)
+{
+    h3i_gpu *g = test_gpu_create();
+    if (g == NULL) {
+        return;
+    }
+    srand(4321);
+    const int types[] = {H3I_TYPE_F32, H3I_TYPE_F16, H3I_TYPE_BF16, H3I_TYPE_Q8_0,
+                         H3I_TYPE_Q2_K, H3I_TYPE_Q3_K, H3I_TYPE_Q4_K, H3I_TYPE_Q5_K,
+                         H3I_TYPE_Q6_K};
+    for (size_t ti_i = 0; ti_i < sizeof types / sizeof types[0]; ti_i++) {
+        int type = types[ti_i];
+        h3i_type_info info = h3i_type_info_get(type);
+        enum { NB = 64 };
+        size_t elements = (size_t)NB * (size_t)info.block_values;
+        size_t bytes = (size_t)NB * (size_t)info.block_bytes;
+        uint8_t *raw = malloc(bytes);
+        float *cpu = malloc(elements * 4);
+        float *got = malloc(elements * 4);
+        uint16_t *gotb = malloc(elements * 2);
+        fill_random(raw, bytes);
+        for (int b = 0; b < NB; b++) {
+            uint8_t *blk = raw + (size_t)b * (size_t)info.block_bytes;
+            if (type == H3I_TYPE_Q8_0) put_half(blk, rand_half_finite());
+            if (type == H3I_TYPE_Q2_K) { put_half(blk + 80, rand_half_finite()); put_half(blk + 82, rand_half_finite()); }
+            if (type == H3I_TYPE_Q3_K) put_half(blk + 108, rand_half_finite());
+            if (type == H3I_TYPE_Q4_K || type == H3I_TYPE_Q5_K) { put_half(blk, rand_half_finite()); put_half(blk + 2, rand_half_finite()); }
+            if (type == H3I_TYPE_Q6_K) put_half(blk + 208, rand_half_finite());
+            if (type == H3I_TYPE_F16) {
+                for (size_t j = 0; j < bytes; j += 2) {
+                    raw[j] = (uint8_t)(rand() & 255);
+                    raw[j + 1] = (uint8_t)((rand() & 0x7B) | ((rand() & 1) << 7));
+                }
+            }
+        }
+        h3i_dequant_row(type, raw, elements, cpu);
+
+        h3i_gpu_tensor *traw = h3i_gpu_tensor_new_i8(g, bytes + 8);
+        memcpy((uint8_t *)h3i_gpu_tensor_contents(traw) + 3, raw, bytes);
+        h3i_gpu_tensor *tf = h3i_gpu_tensor_new_f32(g, elements + 7);
+        h3i_gpu_tensor *tb = h3i_gpu_tensor_new_bf16(g, elements);
+
+        CHECK(h3i_gpu_begin(g), "gpu begin type %d", type);
+        CHECK(h3i_gpu_convert_raw(g, tf, 7, traw, 3, type, elements),
+              "convert f32 type %d: %s", type, h3i_gpu_error(g));
+        CHECK(h3i_gpu_convert_raw(g, tb, 0, traw, 3, type, elements),
+              "convert bf16 type %d: %s", type, h3i_gpu_error(g));
+        CHECK(h3i_gpu_submit(g), "gpu submit type %d: %s", type, h3i_gpu_error(g));
+        h3i_gpu_read_f32(tf, got, elements + 7);
+        h3i_gpu_read_bf16(tb, gotb, elements);
+        int bad = -1;
+        for (size_t i = 0; i < elements; i++) {
+            if (bits_of(got[7 + i]) != bits_of(cpu[i])) {
+                bad = (int)i;
+                break;
+            }
+        }
+        CHECK(bad < 0, "GPU F32 convert type %d bit-exact (diff at %d)", type, bad);
+        bad = -1;
+        for (size_t i = 0; i < elements; i++) {
+            if (gotb[i] != f_bf16(cpu[i])) {
+                bad = (int)i;
+                break;
+            }
+        }
+        CHECK(bad < 0, "GPU BF16 convert type %d bit-exact (diff at %d)", type, bad);
+
+        h3i_gpu_tensor_free(traw);
+        h3i_gpu_tensor_free(tf);
+        h3i_gpu_tensor_free(tb);
+        free(raw);
+        free(cpu);
+        free(got);
+        free(gotb);
+    }
+    h3i_gpu_free(g);
+}
+#endif /* __APPLE__ */
+
 int main(void)
 {
     test_mkdir("build");
@@ -379,5 +466,8 @@ int main(void)
     test_gguf_valid();
     test_gguf_errors();
     test_real_weights();
+#ifdef __APPLE__
+    test_dequant_gpu();
+#endif
     TEST_RESULT();
 }

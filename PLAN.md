@@ -11,8 +11,15 @@ wins; where SPEC.md and the original reference code disagree, the spec's Part 7 
   GPU convert half lands with M1)
 - M3 layout + host math — ✅ committed `d03763e` (A2 bit-exact vs independent Python vectors;
   267 checks total, 0 failures on Linux)
-- M1 GPU runtime — next; first Mac sync point covers M1+M2+M3
-  (`test_gpu_ops`, `test_gguf` GPU half, `test_weights`, `test_layout`, real-weight checks)
+- M1 GPU runtime — code complete (gpu.h, context.m, tensor.m, ops_h3i.m,
+  shaders.metal + kernels.metal: 52 pipelines; test_gpu_ops / test_attention /
+  test_handoff / test_gguf GPU half / bench_gpu). **Gate pending first Mac sync.**
+  First-pass deviations (numerics preserved, upgrade in M12): SDPA built from
+  graph matmul+softmax ops instead of the fused MPSGraph SDPA op; conv3d as a
+  direct F32 fma kernel instead of MPSGraph Conv3D. MPSGraph selector sites are
+  marked `MPSGRAPH-API` in ops_h3i.m for quick fixing if the Mac build objects.
+- First Mac sync batch: `make lib` + test_gpu_ops, test_gguf (incl. real-weight
+  checks), test_weights, test_layout, test_attention, test_handoff, bench_gpu.
 - M4–M12 — pending
 
 Target: a single C CLI (`h3-image`, version `0.1.0`) for **Apple Silicon, macOS 15+**,
