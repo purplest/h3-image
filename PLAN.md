@@ -1,8 +1,9 @@
 # h3-image — implementation plan
 
-Status: **in progress** (decisions resolved, see §9). Source of truth: `SPEC.md` (committed
-alongside this plan). Where this plan and SPEC.md disagree, SPEC.md wins; where SPEC.md and
-the original reference code disagree, the spec's Part 7 notes apply.
+Status: **in progress** (decisions resolved, see §9). Source of truth: `SPEC.md`, kept as a
+local working reference on the development machine — intentionally **not tracked** in this
+repository (gitignored, scrubbed from history). Where this plan and SPEC.md disagree, SPEC.md
+wins; where SPEC.md and the original reference code disagree, the spec's Part 7 notes apply.
 
 **Milestone status** (updated 2026-11-19):
 - M0 scaffolding — ✅ committed `15e4a3f` (12 checks)

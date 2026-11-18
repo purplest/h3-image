@@ -56,6 +56,10 @@ dkms.conf
 
 # --- h3-image project ---
 
+# The rebuild specification is kept locally as a working reference only;
+# it is intentionally NOT part of the repository or its history.
+SPEC.md
+
 # Build tree and binary
 build/
 h3-image
