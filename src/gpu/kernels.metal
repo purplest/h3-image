@@ -65,7 +65,7 @@ static void decode_chunk(int type, const device uchar *b, uint c, thread float *
     case T_Q8_0: {
         float d = half_f(le16(b));
         for (uint j = 0; j < 32; j++) {
-            precise float q = float(s8(b[2 + j]));
+            float q = float(s8(b[2 + j]));
             y[j] = q * d;
         }
         return;
@@ -105,7 +105,7 @@ static void decode_chunk(int type, const device uchar *b, uint c, thread float *
         for (uint l = 0; l < 16; l++) {
             uint i = l + second;
             int v = int((q[i] >> shift) & 3) - ((hmask[i] & m) ? 0 : 4);
-            precise float r = dl * float(v);
+            float r = dl * float(v);
             y[l] = r;
         }
         return;
@@ -164,7 +164,7 @@ static void decode_chunk(int type, const device uchar *b, uint c, thread float *
             default: q = int(L[l + 32] >> 4) | (int((H[l] >> 6) & 3) << 4); break;
             }
             q -= 32;
-            precise float a = d * float(s8(S[l / 16 + 2 * k]));
+            float a = d * float(s8(S[l / 16 + 2 * k]));
             y[l] = a * float(q);
         }
         return;
@@ -317,7 +317,7 @@ kernel void h3i_gqa_causal_bf16(device ushort *out [[buffer(0)]],
             float acc = 0.0f;
             for (uint j = 0; j < nkeys; j++) {
                 const device ushort *vj = v + ((size_t)j * p.kvheads + kvh) * p.hd;
-                precise float pj = scores[j] * inv;
+                float pj = scores[j] * inv;
                 acc = fma(pj, bf16_to_f32(vj[tid]), acc);
             }
             out[obase + tid] = f32_to_bf16(acc);
@@ -399,7 +399,7 @@ kernel void h3i_bf16_to_f16(device ushort *out [[buffer(0)]],
                             uint gid [[thread_position_in_grid]])
 {
     if (gid < p.count) {
-        precise float v = bf16_to_f32(in[gid]) * p.scale;
+        float v = bf16_to_f32(in[gid]) * p.scale;
         out[gid] = as_type<ushort>(half(v)); /* Metal float→half is RNE */
     }
 }
@@ -417,7 +417,7 @@ kernel void h3i_f16_to_bf16_checked(device ushort *out [[buffer(0)]],
     if (!isfinite(v)) {
         atomic_fetch_or_explicit(flag, p.bits, memory_order_relaxed);
     }
-    precise float s = v * p.scale;
+    float s = v * p.scale;
     out[gid] = f32_to_bf16(s);
 }
 
@@ -434,7 +434,7 @@ kernel void h3i_transpose_bf16_f16(device ushort *out [[buffer(0)]],
         uint r = r0 + tid.y + i * 8;
         uint c = c0 + tid.x;
         if (r < p.rows && c < p.columns) {
-            precise float v = bf16_to_f32(in[(size_t)(p.row_offset + r) * p.columns + c]) * p.scale;
+            float v = bf16_to_f32(in[(size_t)(p.row_offset + r) * p.columns + c]) * p.scale;
             tile[tid.y + i * 8][tid.x] = half(v);
         }
     }
@@ -586,7 +586,7 @@ kernel void h3i_vae_encoder_group_norm_silu_f32(device float *out [[buffer(0)]],
     float v = 0.0f;
     for (uint e = tid; e < count; e += ROW_THREADS) {
         uint sp = e / cpg, cc = e % cpg;
-        precise float d = x[(size_t)sp * p.c + cc] - mean;
+        float d = x[(size_t)sp * p.c + cc] - mean;
         v = fma(d, d, v);
     }
     v = row_tree_sum(v, tid, scratch);
@@ -595,10 +595,10 @@ kernel void h3i_vae_encoder_group_norm_silu_f32(device float *out [[buffer(0)]],
     for (uint e = tid; e < count; e += ROW_THREADS) {
         uint sp = e / cpg, cc = e % cpg;
         size_t i = (size_t)sp * p.c + cc;
-        precise float d = x[i] - mean;
-        precise float n2 = d * inv;
-        precise float a = n2 * w[g * cpg + cc];
-        precise float r = a + b[g * cpg + cc];
+        float d = x[i] - mean;
+        float n2 = d * inv;
+        float a = n2 * w[g * cpg + cc];
+        float r = a + b[g * cpg + cc];
         y[i] = silu_f(r);
     }
 }

@@ -37,13 +37,14 @@ int main(void)
     CHECK(dst[0] == '\0', "path copy NULL gives empty string");
 
     /* Shader lookup: H3I_SHADERS wins; a missing override fails with no
-     * fallback. Run from the repo root so SPEC.md is a regular file. */
+     * fallback. Run from the repo root so Makefile is a regular file.
+     * (SPEC.md is intentionally not in the repository.) */
     char shader[H3I_PATH_MAX];
-    setenv("H3I_SHADERS", "SPEC.md", 1);
+    setenv("H3I_SHADERS", "Makefile", 1);
     const char *p = h3i_shader_path(shader, sizeof shader);
     CHECK(p != NULL, "H3I_SHADERS regular file accepted");
     if (p != NULL) {
-        CHECK(strstr(p, "SPEC.md") != NULL, "H3I_SHADERS path: '%s'", p);
+        CHECK(strstr(p, "Makefile") != NULL, "H3I_SHADERS path: '%s'", p);
     }
     setenv("H3I_SHADERS", "/nonexistent-h3i-shaders-xyz", 1);
     CHECK(h3i_shader_path(shader, sizeof shader) == NULL,

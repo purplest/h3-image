@@ -2,8 +2,9 @@
  * Concatenated before kernels.metal into build/h3i_shaders.metal; helpers
  * defined here are visible there. Compiled with safe math mode (no fast
  * math). BF16 is stored as ushort; conversions use the spec's exact RNE bit
- * trick. "precise" locals prevent multiply-add contraction where the spec
- * requires separately-rounded ops; fma() is used only where it writes fma. */
+ * trick. Safe math mode (no fast math) keeps operations separately rounded
+ * where the spec requires it; fma() is used only where the spec writes fma.
+ * (MSL has no "precise" qualifier — do not add one.) */
 #include <metal_stdlib>
 using namespace metal;
 
@@ -23,8 +24,8 @@ static inline ushort f32_to_bf16(float x)
 
 static inline float silu_f(float x)
 {
-    precise float e = exp(-x);
-    precise float d = 1.0f + e;
+    float e = exp(-x);
+    float d = 1.0f + e;
     return x / d;
 }
 
@@ -268,8 +269,8 @@ kernel void h3i_add_bf16(device ushort *out [[buffer(0)]],
                          uint gid [[thread_position_in_grid]])
 {
     if (gid < p.n) {
-        precise float a = bf16_to_f32(l[gid]);
-        precise float b = bf16_to_f32(r[gid]);
+        float a = bf16_to_f32(l[gid]);
+        float b = bf16_to_f32(r[gid]);
         out[gid] = f32_to_bf16(a + b);
     }
 }
@@ -281,9 +282,9 @@ kernel void h3i_silu_mul_bf16(device ushort *out [[buffer(0)]],
                               uint gid [[thread_position_in_grid]])
 {
     if (gid < p.n) {
-        precise float g = bf16_to_f32(gate[gid]);
-        precise float u = bf16_to_f32(up[gid]);
-        precise float s = silu_f(g);
+        float g = bf16_to_f32(gate[gid]);
+        float u = bf16_to_f32(up[gid]);
+        float s = silu_f(g);
         out[gid] = f32_to_bf16(s * u);
     }
 }
@@ -295,8 +296,8 @@ kernel void h3i_add_scaled_f32(device float *out [[buffer(0)]],
                                uint gid [[thread_position_in_grid]])
 {
     if (gid < p.n) {
-        precise float a = p.ls * l[gid];
-        precise float b = p.rs * r[gid];
+        float a = p.ls * l[gid];
+        float b = p.rs * r[gid];
         out[gid] = a + b;
     }
 }
@@ -309,18 +310,18 @@ kernel void h3i_gelu_bf16(device ushort *out [[buffer(0)]],
     if (gid >= p.n) {
         return;
     }
-    precise float x = bf16_to_f32(in[gid]);
+    float x = bf16_to_f32(in[gid]);
     float y;
     if (p.approximate) {
         /* GELU-tanh (SPEC §4.0) */
-        precise float x3 = x * x * x;
-        precise float inner = 0.7978845608028654f * (x + 0.044715f * x3);
+        float x3 = x * x * x;
+        float inner = 0.7978845608028654f * (x + 0.044715f * x3);
         if (inner <= -10.0f) {
             y = 0.0f;
         } else if (inner >= 10.0f) {
             y = x;
         } else {
-            precise float t = tanh(inner);
+            float t = tanh(inner);
             y = 0.5f * x * (1.0f + t);
         }
     } else {
@@ -330,13 +331,13 @@ kernel void h3i_gelu_bf16(device ushort *out [[buffer(0)]],
         } else if (x >= 10.0f) {
             y = x;
         } else {
-            precise float ax = abs(x);
-            precise float tt = 1.0f / (1.0f + 0.3275911f * ax);
-            precise float poly = ((((1.061405429f * tt - 1.453152027f) * tt
+            float ax = abs(x);
+            float tt = 1.0f / (1.0f + 0.3275911f * ax);
+            float poly = ((((1.061405429f * tt - 1.453152027f) * tt
                                     + 1.421413741f) * tt - 0.284496736f) * tt
                                   + 0.254829592f) * tt;
-            precise float e = exp(-ax * ax);
-            precise float erf = 1.0f - poly * e;
+            float e = exp(-ax * ax);
+            float erf = 1.0f - poly * e;
             if (x < 0.0f) {
                 erf = -erf;
             }
@@ -383,7 +384,7 @@ kernel void h3i_rms_norm_f32(device float *out [[buffer(0)]],
     float inv = rsqrt(ss / (float)p.width + p.eps);
     device float *y = out + row * p.width;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float a = x[i] * inv;
+        float a = x[i] * inv;
         y[i] = a * w[i];
     }
 }
@@ -409,8 +410,8 @@ kernel void h3i_rms_norm_bf16(device ushort *out [[buffer(0)]],
     float inv = rsqrt(ss / (float)p.width + p.eps);
     device ushort *y = out + row * p.width;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float a = bf16_to_f32(x[i]) * inv;
-        precise float b = a * bf16_to_f32(w[i]);
+        float a = bf16_to_f32(x[i]) * inv;
+        float b = a * bf16_to_f32(w[i]);
         y[i] = f32_to_bf16(b);
     }
 }
@@ -436,16 +437,16 @@ kernel void h3i_layer_norm_f32(device float *out [[buffer(0)]],
     float mean = s / (float)p.width;
     float v = 0.0f;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float d = x[i] - mean;
+        float d = x[i] - mean;
         v = fma(d, d, v);
     }
     v = row_tree_sum(v, tid, scratch);
     float inv = rsqrt(v / (float)p.width + p.eps);
     device float *y = out + row * p.width;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float d = x[i] - mean;
-        precise float n = d * inv;
-        precise float a = n * w[i];
+        float d = x[i] - mean;
+        float n = d * inv;
+        float a = n * w[i];
         y[i] = a + b[i];
     }
 }
@@ -471,15 +472,15 @@ kernel void h3i_layer_norm_bf16(device ushort *out [[buffer(0)]],
     float mean = s / (float)p.width;
     float v = 0.0f;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float d = bf16_to_f32(x[i]) - mean;
+        float d = bf16_to_f32(x[i]) - mean;
         v = fma(d, d, v);
     }
     v = row_tree_sum(v, tid, scratch);
     float inv = rsqrt(v / (float)p.width + p.eps);
     device ushort *y = out + row * p.width;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float d = bf16_to_f32(x[i]) - mean;
-        precise float n = d * inv;
+        float d = bf16_to_f32(x[i]) - mean;
+        float n = d * inv;
         /* BF16 LayerNorm uses fma(norm, w, b) (SPEC §4.0). */
         float r = fma(n, bf16_to_f32(w[i]), bf16_to_f32(b[i]));
         y[i] = f32_to_bf16(r);
@@ -497,9 +498,9 @@ kernel void h3i_swiglu_f32(device float *out [[buffer(0)]],
     if (r >= p.rows || c >= p.width) {
         return;
     }
-    precise float g = fused[r * (2 * p.width) + c];
-    precise float u = fused[r * (2 * p.width) + p.width + c];
-    precise float s = silu_f(g);
+    float g = fused[r * (2 * p.width) + c];
+    float u = fused[r * (2 * p.width) + p.width + c];
+    float s = silu_f(g);
     out[r * p.width + c] = s * u;
 }
 
@@ -512,9 +513,9 @@ kernel void h3i_swiglu_bf16(device ushort *out [[buffer(0)]],
     if (r >= p.rows || c >= p.width) {
         return;
     }
-    precise float g = bf16_to_f32(fused[r * (2 * p.width) + c]);
-    precise float u = bf16_to_f32(fused[r * (2 * p.width) + p.width + c]);
-    precise float s = silu_f(g);
+    float g = bf16_to_f32(fused[r * (2 * p.width) + c]);
+    float u = bf16_to_f32(fused[r * (2 * p.width) + p.width + c]);
+    float s = silu_f(g);
     out[r * p.width + c] = f32_to_bf16(s * u);
 }
 
@@ -530,7 +531,7 @@ kernel void h3i_scale_add_f32(device float *out [[buffer(0)]],
         return;
     }
     size_t i = (size_t)r * p.width + c;
-    precise float a = scale[c] * branch[i];
+    float a = scale[c] * branch[i];
     out[i] = res[i] + a;
 }
 
@@ -587,16 +588,16 @@ kernel void h3i_qkv_rope_bf16(device ushort *q [[buffer(0)]],
         if (rh > 0 && d < rh) {
             float c = bf16_to_f32(cosb[(size_t)row * (2 * rh) + d]);
             float s = bf16_to_f32(sinb[(size_t)row * (2 * rh) + d]);
-            precise float qa = qv[d] * c;
-            precise float qb = qv[d + rh] * s;
-            precise float ka = kv[d] * c;
-            precise float kb = kv[d + rh] * s;
+            float qa = qv[d] * c;
+            float qb = qv[d + rh] * s;
+            float ka = kv[d] * c;
+            float kb = kv[d + rh] * s;
             qo = qa - qb;
             ko = ka - kb;
-            precise float qc = qv[d + rh] * c;
-            precise float qd = qv[d] * s;
-            precise float kc = kv[d + rh] * c;
-            precise float kd = kv[d] * s;
+            float qc = qv[d + rh] * c;
+            float qd = qv[d] * s;
+            float kc = kv[d + rh] * c;
+            float kd = kv[d] * s;
             qv[d + rh] = qc + qd; /* written below via pair handling */
             kv[d + rh] = kc + kd;
             /* store the rotated low dim now; high dim stored when d loop
@@ -663,10 +664,10 @@ kernel void h3i_qkv_rope_bf16_coop(device ushort *q [[buffer(0)]],
         if (rh > 0 && d < rh) {
             float c = bf16_to_f32(cosb[(size_t)row * (2 * rh) + d]);
             float s = bf16_to_f32(sinb[(size_t)row * (2 * rh) + d]);
-            precise float qlo = qv[d] * c - qv[d + rh] * s;
-            precise float qhi = qv[d + rh] * c + qv[d] * s;
-            precise float klo = kv[d] * c - kv[d + rh] * s;
-            precise float khi = kv[d + rh] * c + kv[d] * s;
+            float qlo = qv[d] * c - qv[d + rh] * s;
+            float qhi = qv[d + rh] * c + qv[d] * s;
+            float klo = kv[d] * c - kv[d + rh] * s;
+            float khi = kv[d + rh] * c + kv[d] * s;
             q[obase + d] = f32_to_bf16(qlo);
             q[obase + d + rh] = f32_to_bf16(qhi);
             k[obase + d] = f32_to_bf16(klo);
@@ -723,18 +724,18 @@ kernel void h3i_video_qkv_rope_f32(device float *q [[buffer(0)]],
             float c = cos_t[(size_t)row * (2 * rh) + ti];
             float s = sin_t[(size_t)row * (2 * rh) + ti];
             if (d < rh) {
-                precise float a = qv[d] * c;
-                precise float b = qv[d + rh] * s;
+                float a = qv[d] * c;
+                float b = qv[d + rh] * s;
                 qo = a - b;
-                precise float ka = kv[d] * c;
-                precise float kb = kv[d + rh] * s;
+                float ka = kv[d] * c;
+                float kb = kv[d + rh] * s;
                 ko = ka - kb;
             } else {
-                precise float a = qv[d] * c;
-                precise float b = qv[d - rh] * s;
+                float a = qv[d] * c;
+                float b = qv[d - rh] * s;
                 qo = a + b;
-                precise float ka = kv[d] * c;
-                precise float kb = kv[d - rh] * s;
+                float ka = kv[d] * c;
+                float kb = kv[d - rh] * s;
                 ko = ka + kb;
             }
         }
@@ -764,20 +765,20 @@ kernel void h3i_vision_qkv_rope_bf16(device ushort *q [[buffer(0)]],
     size_t obase = ((size_t)row * p.heads + h) * p.hd;
     uint rh = p.rope_half; /* 36 */
     for (uint d = 0; d < p.hd; d++) {
-        precise float qd = bf16_to_f32(src[h * p.hd + d]);
-        precise float kd = bf16_to_f32(src[inner + h * p.hd + d]);
+        float qd = bf16_to_f32(src[h * p.hd + d]);
+        float kd = bf16_to_f32(src[inner + h * p.hd + d]);
         uint ti = d % rh;
         float c = bf16_to_f32(cosb[(size_t)row * (2 * rh) + ti]);
         float s = bf16_to_f32(sinb[(size_t)row * (2 * rh) + ti]);
         float qo, ko;
         if (d < rh) {
-            precise float qp = bf16_to_f32(src[h * p.hd + d + rh]);
-            precise float kp = bf16_to_f32(src[inner + h * p.hd + d + rh]);
+            float qp = bf16_to_f32(src[h * p.hd + d + rh]);
+            float kp = bf16_to_f32(src[inner + h * p.hd + d + rh]);
             qo = qd * c - qp * s;
             ko = kd * c - kp * s;
         } else {
-            precise float qp = bf16_to_f32(src[h * p.hd + d - rh]);
-            precise float kp = bf16_to_f32(src[inner + h * p.hd + d - rh]);
+            float qp = bf16_to_f32(src[h * p.hd + d - rh]);
+            float kp = bf16_to_f32(src[inner + h * p.hd + d - rh]);
             qo = qd * c + qp * s;
             ko = kd * c + kp * s;
         }
@@ -805,8 +806,8 @@ kernel void h3i_head_rms_norm_bf16(device ushort *io [[buffer(0)]],
     }
     float inv = rsqrt(ss / (float)p.hd + p.eps);
     for (uint d = 0; d < p.hd; d++) {
-        precise float a = bf16_to_f32(x[d]) * inv;
-        precise float b = a * bf16_to_f32(w[d]);
+        float a = bf16_to_f32(x[d]) * inv;
+        float b = a * bf16_to_f32(w[d]);
         x[d] = f32_to_bf16(b);
     }
 }
@@ -829,20 +830,20 @@ kernel void h3i_rope_text_bf16(device ushort *q [[buffer(0)]],
     const device float *s = sin_t + (size_t)row * half;
     device ushort *qq = q + ((size_t)row * p.qheads + h) * p.hd;
     for (uint d = 0; d < half; d++) {
-        precise float a = bf16_to_f32(qq[d]);
-        precise float b = bf16_to_f32(qq[d + half]);
-        precise float a2 = a * c[d] - b * s[d];
-        precise float b2 = b * c[d] + a * s[d];
+        float a = bf16_to_f32(qq[d]);
+        float b = bf16_to_f32(qq[d + half]);
+        float a2 = a * c[d] - b * s[d];
+        float b2 = b * c[d] + a * s[d];
         qq[d] = f32_to_bf16(a2);
         qq[d + half] = f32_to_bf16(b2);
     }
     if (h < p.kvheads) {
         device ushort *kk = k + ((size_t)row * p.kvheads + h) * p.hd;
         for (uint d = 0; d < half; d++) {
-            precise float a = bf16_to_f32(kk[d]);
-            precise float b = bf16_to_f32(kk[d + half]);
-            precise float a2 = a * c[d] - b * s[d];
-            precise float b2 = b * c[d] + a * s[d];
+            float a = bf16_to_f32(kk[d]);
+            float b = bf16_to_f32(kk[d + half]);
+            float a2 = a * c[d] - b * s[d];
+            float b2 = b * c[d] + a * s[d];
             kk[d] = f32_to_bf16(a2);
             kk[d + half] = f32_to_bf16(b2);
         }
@@ -877,9 +878,9 @@ kernel void h3i_adaln_bf16(device ushort *out [[buffer(0)]],
     const device ushort *scale = mod + mbase + p.scale_slot * p.width;
     device ushort *y = out + (size_t)row * p.width;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float n = (bf16_to_f32(x[i]) * inv) * bf16_to_f32(normw[i]);
-        precise float sc = 1.0f + bf16_to_f32(scale[i]);
-        precise float a = n * sc;
+        float n = (bf16_to_f32(x[i]) * inv) * bf16_to_f32(normw[i]);
+        float sc = 1.0f + bf16_to_f32(scale[i]);
+        float a = n * sc;
         y[i] = f32_to_bf16(a + bf16_to_f32(shift[i]));
     }
 }
@@ -898,8 +899,8 @@ kernel void h3i_gate_bf16(device ushort *out [[buffer(0)]],
     }
     size_t i = (size_t)row * p.width + c;
     size_t gbase = (size_t)row_map[row] * p.slots * p.width + p.gate_slot * p.width;
-    precise float g = bf16_to_f32(mod[gbase + c]);
-    precise float a = bf16_to_f32(branch[i]) * g;
+    float g = bf16_to_f32(mod[gbase + c]);
+    float a = bf16_to_f32(branch[i]) * g;
     out[i] = f32_to_bf16(bf16_to_f32(res[i]) + a);
 }
 
@@ -925,8 +926,8 @@ kernel void h3i_gate_adaln_bf16_exact_simd(device ushort *out_res [[buffer(0)]],
     const device ushort *gate = mod + mbase + p.gate_slot * p.width;
     /* phase 1: gated residual, BF16-rounded */
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float g = bf16_to_f32(gate[i]);
-        precise float a = bf16_to_f32(branch[base + i]) * g;
+        float g = bf16_to_f32(gate[i]);
+        float a = bf16_to_f32(branch[base + i]) * g;
         out_res[base + i] = f32_to_bf16(bf16_to_f32(res[base + i]) + a);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -941,9 +942,9 @@ kernel void h3i_gate_adaln_bf16_exact_simd(device ushort *out_res [[buffer(0)]],
     const device ushort *shift = mod + mbase + p.shift_slot * p.width;
     const device ushort *scale = mod + mbase + p.scale_slot * p.width;
     for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        precise float n = (bf16_to_f32(out_res[base + i]) * inv) * bf16_to_f32(normw[i]);
-        precise float sc = 1.0f + bf16_to_f32(scale[i]);
-        precise float a = n * sc;
+        float n = (bf16_to_f32(out_res[base + i]) * inv) * bf16_to_f32(normw[i]);
+        float sc = 1.0f + bf16_to_f32(scale[i]);
+        float a = n * sc;
         out_adaln[base + i] = f32_to_bf16(a + bf16_to_f32(shift[i]));
     }
 }

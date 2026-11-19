@@ -359,18 +359,26 @@ static void test_real_weights(void)
     CHECK(t != NULL && t->type == H3I_TYPE_Q4_K, "qkv tensor present, Q4_K");
     if (t != NULL) {
         CHECK(t->elements == 21504ULL * 5376ULL, "qkv elements");
-        /* dequantize the first block row and check finiteness */
-        uint8_t raw[144];
-        CHECK(h3i_source_read_raw(t, raw, 0, 1, err, sizeof err), "read raw block: %s", err);
-        float out[256];
-        h3i_dequant_block(t->type, raw, out);
-        int finite = 1;
-        for (int i = 0; i < 256; i++) {
-            if (!isfinite(out[i])) {
-                finite = 0;
+        /* read_raw reads the whole tensor (~65 MB): heap buffer, and only
+         * dequantize the first block after a successful read. */
+        uint8_t *raw = malloc((size_t)t->bytes);
+        CHECK(raw != NULL, "alloc raw buffer");
+        if (raw != NULL) {
+            if (h3i_source_read_raw(t, raw, 0, 1, err, sizeof err)) {
+                float out[256];
+                h3i_dequant_block(t->type, raw, out);
+                int finite = 1;
+                for (int i = 0; i < 256; i++) {
+                    if (!isfinite(out[i])) {
+                        finite = 0;
+                    }
+                }
+                CHECK(finite, "real Q4_K block finite");
+            } else {
+                CHECK(0, "read raw tensor: %s (weights file truncated?)", err);
             }
+            free(raw);
         }
-        CHECK(finite, "real Q4_K block finite");
     }
     h3i_source_free(&s);
 }
