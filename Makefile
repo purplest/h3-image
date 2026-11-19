@@ -146,7 +146,7 @@ objc-syntax:
 		$(CC) -fsyntax-only -x objective-c -fobjc-arc -fblocks \
 		  -fobjc-runtime=gnustep-2.0 \
 		  -std=c11 -D_XOPEN_SOURCE=700 -Itests/macos-stubs -Isrc -DF_NOCACHE=48 \
-		  -Wall -Wextra -Wno-unused-parameter $$f || exit 1; \
+		  -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Wno-unused-parameter $$f || exit 1; \
 	done
 
 # Syntax-check the Apple-only branches of tests/tools on Linux: -D__APPLE__
@@ -156,7 +156,7 @@ test-syntax:
 	@for f in $(TEST_SRCS) $(TOOL_SRCS); do \
 		echo "== test-syntax $$f"; \
 		$(CC) -fsyntax-only -std=c11 -D_XOPEN_SOURCE=700 -D__APPLE__ \
-		  -Isrc -Wall -Wextra -Wno-unused-parameter $$f || exit 1; \
+		  -Isrc -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Wno-unused-parameter $$f || exit 1; \
 	done
 
 # Keep pattern-built objects (make would otherwise delete them as intermediate).

@@ -60,7 +60,7 @@ static void test_norms(h3i_gpu *g)
             double v = bf16_f(x[r * W + i]);
             ss += v * v;
         }
-        double inv = 1.0 / sqrt(ss / W + 1e-5);
+        double inv = 1.0 / sqrt(ss / (double)W + 1e-5);
         for (int i = 0; i < W; i++) {
             ref[r * W + i] = f_bf16((float)(bf16_f(x[r * W + i]) * inv * bf16_f(w[i])));
         }
@@ -81,13 +81,13 @@ static void test_norms(h3i_gpu *g)
         for (int i = 0; i < W; i++) {
             mean += bf16_f(x[r * W + i]);
         }
-        mean /= W;
+        mean /= (double)W;
         double var = 0;
         for (int i = 0; i < W; i++) {
             double d = bf16_f(x[r * W + i]) - mean;
             var += d * d;
         }
-        var /= W;
+        var /= (double)W;
         double inv = 1.0 / sqrt(var + 1e-6);
         for (int i = 0; i < W; i++) {
             double n = (bf16_f(x[r * W + i]) - mean) * inv;
@@ -130,7 +130,7 @@ static void test_adaln_gate(h3i_gpu *g)
             double v = bf16_f(x[r * W + i]);
             ss += v * v;
         }
-        double inv = 1.0 / sqrt(ss / W + 1e-5);
+        double inv = 1.0 / sqrt(ss / (double)W + 1e-5);
         size_t mb = (size_t)map[r] * SLOTS * W;
         for (int i = 0; i < W; i++) {
             double n = bf16_f(x[r * W + i]) * inv * bf16_f(nw[i]);
@@ -472,8 +472,8 @@ static void test_rope_kernels(h3i_gpu *g)
                 ssk = fmaf(kv[d], kv[d], ssk);
             }
             /* CPU reference: rsqrtf is a GPU function, not in libm */
-            float invq = 1.0f / sqrtf(ssq / D2 + 1e-5f);
-            float invk = 1.0f / sqrtf(ssk / D2 + 1e-5f);
+            float invq = 1.0f / sqrtf(ssq / (float)D2 + 1e-5f);
+            float invk = 1.0f / sqrtf(ssk / (float)D2 + 1e-5f);
             for (int d = 0; d < D2; d++) {
                 qv[d] = qv[d] * invq * bf16_f(qn[d]);
                 kv[d] = kv[d] * invk * bf16_f(kn[d]);
