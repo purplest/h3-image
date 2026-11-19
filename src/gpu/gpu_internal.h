@@ -59,6 +59,14 @@ struct h3i_gpu_tensor {
 - (void)noteAlloc:(size_t)bytes;
 - (void)noteFree:(size_t)bytes;
 - (h3i_gpu_stats *)statsPtr;
+/* MPSGraph cache helpers (implemented in context.m, used by ops_h3i.m). */
+- (H3IGraphEntry *)graphEntry:(NSString *)key build:(H3IGraphEntry *(^)(void))builder;
+- (MPSGraphTensorData *)dataForBuffer:(id<MTLBuffer>)buf
+                                shape:(NSArray<NSNumber *> *)shape
+                                dtype:(h3i_dtype)dt;
+- (BOOL)encodeGraph:(H3IGraphEntry *)e
+            sources:(NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)src
+            results:(NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)dst;
 @end
 
 static inline H3IGPU *gpu_obj(h3i_gpu *g)
