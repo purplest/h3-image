@@ -343,12 +343,12 @@ static BOOL mps_sdpa(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *q,
             uint16_t bv = (uint16_t)(sb >> 16);
             NSData *bd = [NSData dataWithBytes:&bv length:2];
             sc = [ge.graph constantWithData:bd shape:@[@1, @1, @1]
-                                   dataType:MPSDataTypeBFloat16 name:nil];
+                                   dataType:MPSDataTypeBFloat16];
         } else {
             float sv = scale;
             NSData *bd = [NSData dataWithBytes:&sv length:4];
             sc = [ge.graph constantWithData:bd shape:@[@1, @1, @1]
-                                   dataType:MPSDataTypeFloat32 name:nil];
+                                   dataType:MPSDataTypeFloat32];
         }
         MPSGraphTensor *scaled = [ge.graph multiplicationWithPrimaryTensor:scores
                                                            secondaryTensor:sc name:nil];

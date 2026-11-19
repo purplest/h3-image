@@ -148,7 +148,7 @@ static NSString *const kPipelineNames[] = {
     }
     id<MTLComputePipelineState> pso = self.pipelines[pipelineName];
     if (pso == nil) {
-        [self setError:"missing Metal pipeline %@", pipelineName];
+        [self setError:"missing Metal pipeline %s", pipelineName.UTF8String];
         return NO;
     }
     id<MTLComputeCommandEncoder> enc = [self.current computeCommandEncoder];
@@ -377,7 +377,7 @@ int h3i_gpu_continue(h3i_gpu *g)
     }
     [gg.current commit];
     [gg.inflight addObject:gg.current];
-    gg.stats.submissions++;
+    gg.statsPtr->submissions++;
     gg.current = [gg.queue commandBuffer];
     return 1;
 }
@@ -393,21 +393,21 @@ int h3i_gpu_submit(h3i_gpu *g)
     [gg.current commit];
     [gg.inflight addObject:gg.current];
     gg.current = nil;
-    gg.stats.submissions++;
+    gg.statsPtr->submissions++;
     int ok = 1;
     for (id<MTLCommandBuffer> cb in gg.inflight) {
         [cb waitUntilCompleted];
         if (cb.status == MTLCommandBufferStatusError) {
-            [gg setError:"Metal command failed: %@",
-             cb.error.localizedDescription ?: @"unknown"];
+            [gg setError:"Metal command failed: %s",
+             (cb.error.localizedDescription ?: @"unknown").UTF8String];
             ok = 0;
         }
         if (cb.GPUEndTime > cb.GPUStartTime) {
-            gg.stats.gpu_seconds += cb.GPUEndTime - cb.GPUStartTime;
+            gg.statsPtr->gpu_seconds += cb.GPUEndTime - cb.GPUStartTime;
         }
     }
     [gg.inflight removeAllObjects];
-    gg.stats.wait_seconds += h3i_now() - t0;
+    gg.statsPtr->wait_seconds += h3i_now() - t0;
     return ok;
 }
 

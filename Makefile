@@ -38,7 +38,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_BINS := $(patsubst tools/%.c,build/%,$(TOOL_SRCS))
 
-.PHONY: all lib test test-quick check-images tools clean core-tests
+.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax
 
 all: h3-image build/h3i_shaders.metal
 
@@ -135,6 +135,19 @@ build/core/test_%: build/core/tests/test_%.c.o $(CORE_LIB_OBJS)
 
 core-tests: $(CORE_TEST_BINS)
 	@for t in $(CORE_TEST_BINS); do echo "== $$t"; ./$$t || exit 1; done
+
+# Linux syntax gate for the ObjC sources: clang -fsyntax-only against stub
+# Apple headers (tests/macos-stubs). Catches declaration/type/selector
+# consistency bugs in OUR code without a Mac. Apple API correctness and
+# Metal shader compilation still require the macOS build.
+objc-syntax:
+	@for f in $(M_SRCS); do \
+		echo "== objc-syntax $$f"; \
+		$(CC) -fsyntax-only -x objective-c -fobjc-arc -fblocks \
+		  -fobjc-runtime=gnustep-2.0 \
+		  -std=c11 -D_XOPEN_SOURCE=700 -Itests/macos-stubs -Isrc -DF_NOCACHE=48 \
+		  -Wall -Wextra -Wno-unused-parameter $$f || exit 1; \
+	done
 
 # Keep pattern-built objects (make would otherwise delete them as intermediate).
 .SECONDARY:

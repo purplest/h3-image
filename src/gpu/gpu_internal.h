@@ -47,7 +47,9 @@ struct h3i_gpu_tensor {
 @property(nonatomic, strong) NSMutableDictionary<NSString *, H3IGraphEntry *> *graphCache;
 @property(nonatomic, assign) h3i_gpu_stats stats;
 @property(nonatomic, copy) NSString *label;
-- (void)setError:(const char *)fmt, ...;
+/* clang counts only explicit parameters for ObjC method format attributes
+ * (verified on macOS and GNUstep runtimes): fmt = 1, varargs = 2. */
+- (void)setError:(const char *)fmt, ... __attribute__((format(printf, 1, 2)));
 - (const char *)lastError;
 - (id<MTLComputePipelineState>)pipeline:(NSString *)name;
 - (BOOL)encodeOp:(NSString *)pipelineName
