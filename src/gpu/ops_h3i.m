@@ -51,7 +51,7 @@ static int need(h3i_gpu *g, const h3i_gpu_tensor *t, h3i_dtype dt, size_t elems,
 {
     H3IGPU *gg = gpu_obj(g);
     if (t == NULL) {
-        [gg setError:@"%s tensor is absent or too small", name];
+        [gg setError:"%s tensor is absent or too small", name];
         return 0;
     }
     H3ITensor *tt = tensor_obj((h3i_gpu_tensor *)t);
@@ -59,11 +59,11 @@ static int need(h3i_gpu *g, const h3i_gpu_tensor *t, h3i_dtype dt, size_t elems,
         const char *want = dt == H3I_DTYPE_BF16 ? "BF16" :
                            dt == H3I_DTYPE_F32 ? "F32" :
                            dt == H3I_DTYPE_I8 ? "int8" : "U32";
-        [gg setError:@"%s tensor is not %s", name, want];
+        [gg setError:"%s tensor is not %s", name, want];
         return 0;
     }
     if (tt.elements < elems) {
-        [gg setError:@"%s tensor is absent or too small", name];
+        [gg setError:"%s tensor is absent or too small", name];
         return 0;
     }
     return 1;
@@ -313,8 +313,9 @@ static BOOL mps_sdpa(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *q,
                      size_t seq, size_t heads, size_t hd, float scale, h3i_dtype dt)
 {
     H3IGPU *gg = gpu_obj(g);
-    NSString *key = [NSString stringWithFormat:@"sdpa_%d_%zu_%zu_%zu",
-                     (int)dt, seq, heads, hd];
+    /* scale is baked into the cached graph as a constant: part of the key */
+    NSString *key = [NSString stringWithFormat:@"sdpa_%d_%zu_%zu_%zu_%g",
+                     (int)dt, seq, heads, hd, (double)scale];
     H3IGraphEntry *e = [gg graphEntry:key build:^H3IGraphEntry *{
         H3IGraphEntry *ge = [H3IGraphEntry new];
         ge.graph = [MPSGraph new];
@@ -331,9 +332,24 @@ static BOOL mps_sdpa(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *q,
         MPSGraphTensor *scores = [ge.graph matrixMultiplicationWithPrimaryTensor:qh
                                                                  secondaryTensor:khT
                                                                             name:nil];
-        MPSGraphTensor *sc = [ge.graph constantWithScalar:(double)scale
-                                                    shape:@[@1, @1, @1]
-                                                 dataType:mdt(dt) name:nil];
+        /* MPSGRAPH-API: constantWithData is the guaranteed constant ctor.
+         * BF16 graphs carry a BF16-rounded scale (first-pass substitute;
+         * the fused SDPA op takes an exact NSNumber scale — M12 upgrade). */
+        MPSGraphTensor *sc;
+        if (dt == H3I_DTYPE_BF16) {
+            uint32_t sb;
+            memcpy(&sb, &scale, 4);
+            sb += 0x7FFFu + ((sb >> 16) & 1u);
+            uint16_t bv = (uint16_t)(sb >> 16);
+            NSData *bd = [NSData dataWithBytes:&bv length:2];
+            sc = [ge.graph constantWithData:bd shape:@[@1, @1, @1]
+                                   dataType:MPSDataTypeBFloat16 name:nil];
+        } else {
+            float sv = scale;
+            NSData *bd = [NSData dataWithBytes:&sv length:4];
+            sc = [ge.graph constantWithData:bd shape:@[@1, @1, @1]
+                                   dataType:MPSDataTypeFloat32 name:nil];
+        }
         MPSGraphTensor *scaled = [ge.graph multiplicationWithPrimaryTensor:scores
                                                            secondaryTensor:sc name:nil];
         MPSGraphTensor *probs = [ge.graph softMaxWithTensor:scaled axis:-1 name:nil];
@@ -858,13 +874,13 @@ int h3i_gpu_convert_raw(h3i_gpu *g, h3i_gpu_tensor *out, size_t out_off,
     size_t blocks = elements / (size_t)ti.block_values;
     if (raw == NULL || tensor_obj((h3i_gpu_tensor *)raw).dtype != H3I_DTYPE_I8 ||
         raw_off + blocks * (size_t)ti.block_bytes > tensor_obj((h3i_gpu_tensor *)raw).bytes) {
-        [gg setError:@"raw tensor is absent or too small"];
+        [gg setError:"raw tensor is absent or too small"];
         return 0;
     }
     h3i_dtype odt = out ? tensor_obj(out).dtype : H3I_DTYPE_F32;
     if (out == NULL || (odt != H3I_DTYPE_BF16 && odt != H3I_DTYPE_F32) ||
         out_off + elements > tensor_obj(out).elements) {
-        [gg setError:@"out tensor is absent or too small"];
+        [gg setError:"out tensor is absent or too small"];
         return 0;
     }
     if (blocks * (size_t)ti.chunks > UINT32_MAX) {
