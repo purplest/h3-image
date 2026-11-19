@@ -825,27 +825,27 @@ kernel void h3i_rope_text_bf16(device ushort *q [[buffer(0)]],
     if (row >= p.rows || h >= p.qheads) {
         return;
     }
-    uint half = p.hd / 2;
-    const device float *c = cos_t + (size_t)row * half;
-    const device float *s = sin_t + (size_t)row * half;
+    uint hd2 = p.hd / 2;
+    const device float *c = cos_t + (size_t)row * hd2;
+    const device float *s = sin_t + (size_t)row * hd2;
     device ushort *qq = q + ((size_t)row * p.qheads + h) * p.hd;
-    for (uint d = 0; d < half; d++) {
+    for (uint d = 0; d < hd2; d++) {
         float a = bf16_to_f32(qq[d]);
-        float b = bf16_to_f32(qq[d + half]);
+        float b = bf16_to_f32(qq[d + hd2]);
         float a2 = a * c[d] - b * s[d];
         float b2 = b * c[d] + a * s[d];
         qq[d] = f32_to_bf16(a2);
-        qq[d + half] = f32_to_bf16(b2);
+        qq[d + hd2] = f32_to_bf16(b2);
     }
     if (h < p.kvheads) {
         device ushort *kk = k + ((size_t)row * p.kvheads + h) * p.hd;
-        for (uint d = 0; d < half; d++) {
+        for (uint d = 0; d < hd2; d++) {
             float a = bf16_to_f32(kk[d]);
-            float b = bf16_to_f32(kk[d + half]);
+            float b = bf16_to_f32(kk[d + hd2]);
             float a2 = a * c[d] - b * s[d];
             float b2 = b * c[d] + a * s[d];
             kk[d] = f32_to_bf16(a2);
-            kk[d + half] = f32_to_bf16(b2);
+            kk[d + hd2] = f32_to_bf16(b2);
         }
     }
 }

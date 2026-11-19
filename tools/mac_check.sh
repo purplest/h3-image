@@ -57,10 +57,20 @@ done
 fail=0
 for t in $TESTS; do
     echo "== run test_$t"
-    if run ./build/test_$t; then
-        :
+    if [ "${MAC_CHECK_DRYRUN:-0}" = "1" ]; then
+        run ./build/test_$t
     else
-        fail=1
+        if ./build/test_$t > "build/test_$t.log" 2>&1; then
+            :
+        else
+            fail=1
+        fi
+        cat "build/test_$t.log"
+        # A skipped GPU suite is NOT a pass: shaders must compile and run.
+        if grep -q "skip: GPU unavailable" "build/test_$t.log"; then
+            echo "^^ GPU suite skipped (shader compile failed): counted as FAILURE"
+            fail=1
+        fi
     fi
 done
 
