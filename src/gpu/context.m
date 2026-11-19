@@ -2,10 +2,24 @@
  * pipelines, command batching, MPSGraph cache, stats (SPEC §6.3). */
 #import "gpu_internal.h"
 
+#include <Availability.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* SDK-version guards: @available checks the runtime OS, but the symbols
+ * themselves must exist in the SDK we compile against. */
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+#define H3I_SDK_MACOS15 1
+#else
+#define H3I_SDK_MACOS15 0
+#endif
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+#define H3I_SDK_MACOS13 1
+#else
+#define H3I_SDK_MACOS13 0
+#endif
 
 #include "app/clock.h"
 #include "app/error.h"
@@ -214,11 +228,15 @@ h3i_gpu *h3i_gpu_create(const char *shader_path, char *error, size_t error_size)
     }
 
     MTLCompileOptions *opts = [MTLCompileOptions new];
+#if H3I_SDK_MACOS15
     if (@available(macOS 15.0, *)) {
         opts.mathMode = MTLMathModeSafe; /* IEEE, no fast math: bit-exactness */
     } else {
         opts.fastMathEnabled = NO;
     }
+#else
+    opts.fastMathEnabled = NO;
+#endif
     id<MTLLibrary> library = [device newLibraryWithSource:source options:opts error:&err];
     if (library == nil) {
         h3i_fail(error, error_size, "cannot compile %s: %s", shader_path,
@@ -308,22 +326,23 @@ int h3i_gpu_get_info(h3i_gpu *g, h3i_gpu_info *out)
     id<MTLDevice> d = gg.device;
     memset(out, 0, sizeof *out);
     snprintf(out->name, sizeof out->name, "%s", d.name.UTF8String ?: "unknown");
+    snprintf(out->architecture, sizeof out->architecture, "Apple GPU");
+    out->apple_gpu_family = 0;
+#if H3I_SDK_MACOS13
     if (@available(macOS 13.0, *)) {
         snprintf(out->architecture, sizeof out->architecture, "%s",
                  d.architecture.name.UTF8String ?: "unknown");
-    } else {
-        snprintf(out->architecture, sizeof out->architecture, "Apple GPU");
-    }
-    out->apple_gpu_family = 0;
-    if (@available(macOS 13.0, *)) {
         if ([d supportsFamily:MTLGPUFamilyApple9]) out->apple_gpu_family = 9;
         else if ([d supportsFamily:MTLGPUFamilyApple8]) out->apple_gpu_family = 8;
         else if ([d supportsFamily:MTLGPUFamilyApple7]) out->apple_gpu_family = 7;
         else if ([d supportsFamily:MTLGPUFamilyApple6]) out->apple_gpu_family = 6;
     }
+#endif
+#if H3I_SDK_MACOS15
     if (@available(macOS 15.0, *)) {
         out->metal4 = [d supportsFamily:MTLGPUFamilyMetal4] ? 1 : 0;
     }
+#endif
     out->unified_memory = NSProcessInfo.processInfo.physicalMemory;
     out->recommended_working_set = d.recommendedMaxWorkingSetSize;
     out->max_buffer_length = d.maxBufferLength;

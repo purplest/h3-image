@@ -137,11 +137,10 @@ static BOOL mps_linear(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *in
                                                   dataType:mdt(dt) name:nil];
         MPSGraphTensor *w = [ge.graph placeholderWithShape:@[@(out_w), @(in_w)]
                                                   dataType:mdt(dt) name:nil];
-        /* MPSGRAPH-API */
+        /* MPSGRAPH-API: plain matmul (macOS 11+) + explicit weight transpose */
+        MPSGraphTensor *wT = [ge.graph transposeTensor:w dimension:0 withDimension:1 name:nil];
         MPSGraphTensor *y = [ge.graph matrixMultiplicationWithPrimaryTensor:x
-                                                            secondaryTensor:w
-                                                              transposeLeft:NO
-                                                             transposeRight:YES
+                                                            secondaryTensor:wT
                                                                        name:nil];
         if (b != NULL) {
             MPSGraphTensor *bb = [ge.graph placeholderWithShape:@[@(out_w)]
@@ -264,10 +263,9 @@ int h3i_gpu_mlp_bf16(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *in,
         MPSGraphTensor *w2 = [ge.graph placeholderWithShape:@[@(out_w), @(hidden)]
                                                    dataType:MPSDataTypeBFloat16 name:nil];
         /* MPSGRAPH-API */
+        MPSGraphTensor *w1T = [ge.graph transposeTensor:w1 dimension:0 withDimension:1 name:nil];
         MPSGraphTensor *fused = [ge.graph matrixMultiplicationWithPrimaryTensor:x
-                                                                secondaryTensor:w1
-                                                                  transposeLeft:NO
-                                                                 transposeRight:YES
+                                                                secondaryTensor:w1T
                                                                            name:nil];
         MPSGraphTensor *gate = [ge.graph sliceTensor:fused
                                               starts:@[@0, @0]
@@ -282,10 +280,9 @@ int h3i_gpu_mlp_bf16(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *in,
                                                         secondaryTensor:sig name:nil];
         MPSGraphTensor *prod = [ge.graph multiplicationWithPrimaryTensor:act
                                                          secondaryTensor:up name:nil];
+        MPSGraphTensor *w2T = [ge.graph transposeTensor:w2 dimension:0 withDimension:1 name:nil];
         ge.result = [ge.graph matrixMultiplicationWithPrimaryTensor:prod
-                                                    secondaryTensor:w2
-                                                      transposeLeft:NO
-                                                     transposeRight:YES
+                                                    secondaryTensor:w2T
                                                                name:nil];
         ge.feeds[@"x"] = x;
         ge.feeds[@"w1"] = w1;
@@ -330,10 +327,9 @@ static BOOL mps_sdpa(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *q,
         MPSGraphTensor *qh = [ge.graph transposeTensor:qt dimension:0 withDimension:1 name:nil];
         MPSGraphTensor *kh = [ge.graph transposeTensor:kt dimension:0 withDimension:1 name:nil];
         MPSGraphTensor *vh = [ge.graph transposeTensor:vt dimension:0 withDimension:1 name:nil];
+        MPSGraphTensor *khT = [ge.graph transposeTensor:kh dimension:1 withDimension:2 name:nil];
         MPSGraphTensor *scores = [ge.graph matrixMultiplicationWithPrimaryTensor:qh
-                                                                 secondaryTensor:kh
-                                                                   transposeLeft:NO
-                                                                  transposeRight:YES
+                                                                 secondaryTensor:khT
                                                                             name:nil];
         MPSGraphTensor *sc = [ge.graph constantWithScalar:(double)scale
                                                     shape:@[@1, @1, @1]
@@ -343,8 +339,6 @@ static BOOL mps_sdpa(h3i_gpu *g, h3i_gpu_tensor *out, const h3i_gpu_tensor *q,
         MPSGraphTensor *probs = [ge.graph softMaxWithTensor:scaled axis:-1 name:nil];
         MPSGraphTensor *oh = [ge.graph matrixMultiplicationWithPrimaryTensor:probs
                                                              secondaryTensor:vh
-                                                               transposeLeft:NO
-                                                              transposeRight:NO
                                                                         name:nil];
         ge.result = [ge.graph transposeTensor:oh dimension:0 withDimension:1 name:nil];
         ge.feeds[@"q"] = qt;
