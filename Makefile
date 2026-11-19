@@ -38,7 +38,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_BINS := $(patsubst tools/%.c,build/%,$(TOOL_SRCS))
 
-.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax
+.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax
 
 all: h3-image build/h3i_shaders.metal
 
@@ -147,6 +147,16 @@ objc-syntax:
 		  -fobjc-runtime=gnustep-2.0 \
 		  -std=c11 -D_XOPEN_SOURCE=700 -Itests/macos-stubs -Isrc -DF_NOCACHE=48 \
 		  -Wall -Wextra -Wno-unused-parameter $$f || exit 1; \
+	done
+
+# Syntax-check the Apple-only branches of tests/tools on Linux: -D__APPLE__
+# selects the GPU code paths, which only need the pure-C gpu.h declarations
+# (no linking). Catches libm/API mistakes in test code before the Mac build.
+test-syntax:
+	@for f in $(TEST_SRCS) $(TOOL_SRCS); do \
+		echo "== test-syntax $$f"; \
+		$(CC) -fsyntax-only -std=c11 -D_XOPEN_SOURCE=700 -D__APPLE__ \
+		  -Isrc -Wall -Wextra -Wno-unused-parameter $$f || exit 1; \
 	done
 
 # Keep pattern-built objects (make would otherwise delete them as intermediate).

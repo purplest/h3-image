@@ -471,8 +471,9 @@ static void test_rope_kernels(h3i_gpu *g)
                 ssq = fmaf(qv[d], qv[d], ssq);
                 ssk = fmaf(kv[d], kv[d], ssk);
             }
-            float invq = rsqrtf(ssq / D2 + 1e-5f);
-            float invk = rsqrtf(ssk / D2 + 1e-5f);
+            /* CPU reference: rsqrtf is a GPU function, not in libm */
+            float invq = 1.0f / sqrtf(ssq / D2 + 1e-5f);
+            float invk = 1.0f / sqrtf(ssk / D2 + 1e-5f);
             for (int d = 0; d < D2; d++) {
                 qv[d] = qv[d] * invq * bf16_f(qn[d]);
                 kv[d] = kv[d] * invk * bf16_f(kn[d]);
