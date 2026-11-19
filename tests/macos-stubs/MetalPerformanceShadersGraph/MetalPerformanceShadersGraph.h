@@ -53,8 +53,10 @@ enum {
                            name:(NSString *)name;
 - (NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)
     encodeToCommandBuffer:(id<MTLCommandBuffer>)cb
-            sourceTensors:(NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)src
-        resultsDictionary:(NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)dst;
+                    feeds:(NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)src
+         targetOperations:(NSArray *)ops
+        resultsDictionary:(NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *)dst
+    executionDescriptor:(id)desc;
 @end
 
 #endif /* H3I_STUB_MPSGRAPH_H */

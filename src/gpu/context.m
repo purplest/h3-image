@@ -24,6 +24,13 @@
 #include "app/clock.h"
 #include "app/error.h"
 
+/* NSString → C string with fallback (plain ternary, no GNU ?: extension). */
+static const char *cstr(NSString *s, const char *fallback)
+{
+    const char *p = s.UTF8String;
+    return p != NULL ? p : fallback;
+}
+
 /* Every pipeline built eagerly at create (SPEC §6.3.4). */
 static NSString *const kPipelineNames[] = {
     @"h3i_linear_f32",
@@ -200,7 +207,14 @@ static NSString *const kPipelineNames[] = {
         [self setError:"h3i_gpu_begin() was not called"];
         return NO;
     }
-    [e.graph encodeToCommandBuffer:self.current sourceTensors:src resultsDictionary:dst];
+    /* Selector verified against Apple's MPSGraph class reference:
+     * encodeToCommandBuffer:feeds:targetOperations:resultsDictionary:
+     * executionDescriptor: (there is no sourceTensors: variant). */
+    [e.graph encodeToCommandBuffer:self.current
+                              feeds:src
+                   targetOperations:nil
+                  resultsDictionary:dst
+              executionDescriptor:nil];
     return YES;
 }
 
@@ -223,24 +237,22 @@ h3i_gpu *h3i_gpu_create(const char *shader_path, char *error, size_t error_size)
                                                     error:&err];
     if (source == nil) {
         h3i_fail(error, error_size, "cannot compile %s: %s", shader_path,
-                 err.localizedDescription.UTF8String ?: "unreadable");
+                 cstr(err.localizedDescription, "unreadable"));
         return NULL;
     }
 
     MTLCompileOptions *opts = [MTLCompileOptions new];
+    /* fastMathEnabled defaults to NO (safe); on macOS 15+ select the explicit
+     * IEEE-safe math mode. The fastMathEnabled setter is deprecated there. */
 #if H3I_SDK_MACOS15
     if (@available(macOS 15.0, *)) {
         opts.mathMode = MTLMathModeSafe; /* IEEE, no fast math: bit-exactness */
-    } else {
-        opts.fastMathEnabled = NO;
     }
-#else
-    opts.fastMathEnabled = NO;
 #endif
     id<MTLLibrary> library = [device newLibraryWithSource:source options:opts error:&err];
     if (library == nil) {
         h3i_fail(error, error_size, "cannot compile %s: %s", shader_path,
-                 err.localizedDescription.UTF8String ?: "unknown error");
+                 cstr(err.localizedDescription, "unknown error"));
         return NULL;
     }
 
@@ -261,7 +273,7 @@ h3i_gpu *h3i_gpu_create(const char *shader_path, char *error, size_t error_size)
                                                                                 error:&err];
         if (pso == nil) {
             h3i_fail(error, error_size, "cannot build %s: %s", name.UTF8String,
-                     err.localizedDescription.UTF8String ?: "unknown error");
+                     cstr(err.localizedDescription, "unknown error"));
             return NULL;
         }
         g.pipelines[name] = pso;
@@ -325,13 +337,13 @@ int h3i_gpu_get_info(h3i_gpu *g, h3i_gpu_info *out)
     H3IGPU *gg = gpu_obj(g);
     id<MTLDevice> d = gg.device;
     memset(out, 0, sizeof *out);
-    snprintf(out->name, sizeof out->name, "%s", d.name.UTF8String ?: "unknown");
+    snprintf(out->name, sizeof out->name, "%s", cstr(d.name, "unknown"));
     snprintf(out->architecture, sizeof out->architecture, "Apple GPU");
     out->apple_gpu_family = 0;
 #if H3I_SDK_MACOS13
     if (@available(macOS 13.0, *)) {
         snprintf(out->architecture, sizeof out->architecture, "%s",
-                 d.architecture.name.UTF8String ?: "unknown");
+                 cstr(d.architecture.name, "unknown"));
         if ([d supportsFamily:MTLGPUFamilyApple9]) out->apple_gpu_family = 9;
         else if ([d supportsFamily:MTLGPUFamilyApple8]) out->apple_gpu_family = 8;
         else if ([d supportsFamily:MTLGPUFamilyApple7]) out->apple_gpu_family = 7;
@@ -399,7 +411,7 @@ int h3i_gpu_submit(h3i_gpu *g)
         [cb waitUntilCompleted];
         if (cb.status == MTLCommandBufferStatusError) {
             [gg setError:"Metal command failed: %s",
-             (cb.error.localizedDescription ?: @"unknown").UTF8String];
+             cstr(cb.error.localizedDescription, "unknown")];
             ok = 0;
         }
         if (cb.GPUEndTime > cb.GPUStartTime) {
@@ -413,7 +425,7 @@ int h3i_gpu_submit(h3i_gpu *g)
 
 void h3i_gpu_profile_set_label(h3i_gpu *g, const char *label)
 {
-    gpu_obj(g).label = [NSString stringWithUTF8String:label ?: ""];
+    gpu_obj(g).label = [NSString stringWithUTF8String:(label != NULL ? label : "")];
 }
 
 void h3i_gpu_get_stats(h3i_gpu *g, h3i_gpu_stats *out)
