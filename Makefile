@@ -38,7 +38,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_BINS := $(patsubst tools/%.c,build/%,$(TOOL_SRCS))
 
-.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax tests-build
+.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax tests-build check bench
 
 all: h3-image build/h3i_shaders.metal
 
@@ -83,6 +83,27 @@ $(TOOL_BINS): build/%: tools/%.c build/libh3image.a
 
 # Build every current test binary and tool in one command.
 tests-build: $(TEST_BINS) $(TOOL_BINS)
+
+# One-command test run. On macOS: build + run every current test binary,
+# print each summary, keep going after failures, exit nonzero if any failed.
+# On Linux: the portable core suite. (The spec's full `make test` arrives
+# with the remaining milestones.)
+ifeq ($(shell uname -s),Darwin)
+check: tests-build
+	@fail=0; for t in $(TEST_BINS); do \
+		echo "== $$t"; ./$$t || fail=1; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "SOME TESTS FAILED"; fi; \
+	exit $$fail
+
+bench: build/bench_gpu
+	./build/bench_gpu 1024
+else
+check: core-tests
+
+bench:
+	@echo "bench requires macOS/Metal"
+endif
 
 test: all $(TEST_BINS)
 	@for t in $(TEST_BINS); do echo "== $$t"; ./$$t || exit 1; done
