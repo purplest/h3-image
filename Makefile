@@ -67,8 +67,13 @@ build/h3i_shaders.metal: src/gpu/shaders.metal src/gpu/kernels.metal
 	@mkdir -p build
 	cat src/gpu/shaders.metal src/gpu/kernels.metal > $@
 
-# Static pattern rules: unambiguous on GNU make 3.81 (macOS) and 4.x.
-$(TEST_BINS): build/test_%: tests/test_%.c build/libh3image.a
+# Two-step test build: compile to an object, then link objects + archive.
+# Never passes two compile inputs to one -o (make 3.81 safe, clang safe).
+build/tests/%.c.o: tests/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TEST_BINS): build/test_%: build/tests/test_%.c.o build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # ggml oracle (A1): contraction fast, same as the Linux core build.
@@ -78,8 +83,12 @@ build/tests/ggml_ref.c.o: tests/ggml_ref.c
 
 build/test_gguf: build/tests/ggml_ref.c.o
 
-$(TOOL_BINS): build/%: tools/%.c build/libh3image.a
-	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
+build/tools/%.c.o: tools/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TOOL_BINS): build/%: build/tools/%.c.o build/libh3image.a
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # Build every current test binary and tool in one command.
 tests-build: $(TEST_BINS) $(TOOL_BINS)
