@@ -38,7 +38,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_BINS := $(patsubst tools/%.c,build/%,$(TOOL_SRCS))
 
-.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax
+.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax tests-build
 
 all: h3-image build/h3i_shaders.metal
 
@@ -67,7 +67,8 @@ build/h3i_shaders.metal: src/gpu/shaders.metal src/gpu/kernels.metal
 	@mkdir -p build
 	cat src/gpu/shaders.metal src/gpu/kernels.metal > $@
 
-build/test_%: tests/test_%.c build/libh3image.a
+# Static pattern rules: unambiguous on GNU make 3.81 (macOS) and 4.x.
+$(TEST_BINS): build/test_%: tests/test_%.c build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # ggml oracle (A1): contraction fast, same as the Linux core build.
@@ -77,8 +78,11 @@ build/tests/ggml_ref.c.o: tests/ggml_ref.c
 
 build/test_gguf: build/tests/ggml_ref.c.o
 
-build/%: tools/%.c build/libh3image.a
+$(TOOL_BINS): build/%: tools/%.c build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
+
+# Build every current test binary and tool in one command.
+tests-build: $(TEST_BINS) $(TOOL_BINS)
 
 test: all $(TEST_BINS)
 	@for t in $(TEST_BINS); do echo "== $$t"; ./$$t || exit 1; done
