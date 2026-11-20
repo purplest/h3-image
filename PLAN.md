@@ -412,6 +412,21 @@ covers image.m. Linux gates: core 267/0, linux-check 0 warnings, test-syntax/obj
 clean. **Mac gate: make check** (test_vae activates with the GGUF-set F16 VAE; writes
 build/test_vae_512.png — a smooth synthetic pattern, coherent images come in Phase 8).
 
+**Phase 5 progress (Linux side done, Mac gate pending):** wrote `model/modulation.{c,h}`:
+official time-MLP on GPU (features → proj_in → SiLU → proj_out → **SiLU in F32 then BF16
+cast** — the donor video path cast first, which double-rounds; spec order implemented),
+per-block BF16 projections one resident at a time; pruned `adaln_t_table` host interpolation
+(clamp/floor/lerp separately rounded, sequential F32 dots, no SiLU) uploaded as BF16 tables;
+format detection by tensor presence; `h3i_dit_prepare_maps`; `h3i_heads_load` (absolute vs
+GGUF base+offset, summed once in F32, S==6 enforced, exact error strings). Exposed
+`h3i_time_act`/`h3i_adaln_project` building blocks so the test can build official block-0
+without all 50 projections (26 GB). `tools/fetch_tensors.py` (HTTP range fetch, 8× backoff,
+'-' auto-resolves shards via the transformer index). `tests/test_modulation`: row-map formula
+(no weights), heads rel L2 <1e-5 (A6), pruned-vs-official worst row rel <0.05 + SiLU control
+>4× worse (A5). Linux gates: core 267/0, linux-check/test-syntax clean, py_compile OK.
+**Mac gate:** fetch fixtures (official_block0 ~610 MB via fetch_tensors.py + pdd_fused_heads
+12 MB via curl), then `make check`.
+
 ## 6. Verification strategy
 
 | Layer | Where | How |
