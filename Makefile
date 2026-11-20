@@ -88,17 +88,23 @@ build/tests/ggml_ref.c.o: tests/ggml_ref.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -ffp-contract=fast -Wno-conversion -c $< -o $@
 
+# Link recipes name their inputs explicitly (never $^): stale .d files from
+# earlier build schemes can append extra prerequisites to these targets, and
+# a leaked .c source turns the link into "cannot specify -o when generating
+# multiple output files".
 $(TEST_BINS): build/test_%: build/tests/test_%.c.o build/libh3image.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
 
-build/test_gguf: build/tests/ggml_ref.c.o
+build/test_gguf: build/tests/test_gguf.c.o build/tests/ggml_ref.c.o build/libh3image.a
+	$(CC) $(CFLAGS) -o $@ build/tests/test_gguf.c.o build/tests/ggml_ref.c.o \
+		build/libh3image.a $(LDLIBS)
 
 build/tools/%.c.o: tools/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TOOL_BINS): build/%: build/tools/%.c.o build/libh3image.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
 
 tests-build: $(TEST_BINS) $(TOOL_BINS)
 
@@ -167,10 +173,12 @@ build/core/tests/ggml_ref.c.o: tests/ggml_ref.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_CFLAGS) -ffp-contract=fast -Wno-conversion -c $< -o $@
 
-build/core/test_gguf: build/core/tests/ggml_ref.c.o
+build/core/test_gguf: build/core/tests/test_gguf.c.o build/core/tests/ggml_ref.c.o $(CORE_LIB_OBJS)
+	$(CC) $(CORE_CFLAGS) -o $@ build/core/tests/test_gguf.c.o \
+		build/core/tests/ggml_ref.c.o $(CORE_LIB_OBJS) $(CORE_LDLIBS)
 
 build/core/test_%: build/core/tests/test_%.c.o $(CORE_LIB_OBJS)
-	$(CC) $(CORE_CFLAGS) -o $@ $^ $(CORE_LDLIBS)
+	$(CC) $(CORE_CFLAGS) -o $@ $< $(CORE_LIB_OBJS) $(CORE_LDLIBS)
 
 core-tests: $(CORE_TEST_BINS)
 	@for t in $(CORE_TEST_BINS); do echo "== $$t"; ./$$t || exit 1; done
