@@ -20,6 +20,7 @@
 #include "io/image.h"
 #include "model/layout.h"
 #include "model/vae.h"
+#include "weights/gguf.h"
 #include "weights/source.h"
 
 static void test_config(void) {
@@ -191,6 +192,48 @@ static void test_decode(void) {
                                  sizeof err);
         CHECK(dec32 != NULL, "load F32 VAE: %s", err);
         if (dec32) {
+            /* Diagnostic: compare the weights themselves (CPU dequant path,
+             * independent of the GPU decoder). A low PSNR with near-identical
+             * weights would implicate the decoder; differing weights implicate
+             * the files (dtype or checkpoint version). */
+            const char *probe_names[] = {
+                "decoder.x_embedder.weight",
+                "decoder.transformer_blocks.0.attn.to_qkv.weight",
+            };
+            for (int i = 0; i < 2; i++) {
+                const h3i_tensor_rec *ra = h3i_source_find(&source, probe_names[i]);
+                const h3i_tensor_rec *rb = h3i_source_find(&src32, probe_names[i]);
+                if (ra && rb) {
+                    printf("vae %s: gguf-side %s, official-side %s\n",
+                           probe_names[i], h3i_type_name(ra->type),
+                           h3i_type_name(rb->type));
+                    if (ra->elements == rb->elements) {
+                        float *wa = h3i_source_read_f32(&source, probe_names[i],
+                                                        ra->elements, err,
+                                                        sizeof err);
+                        float *wb = h3i_source_read_f32(&src32, probe_names[i],
+                                                        rb->elements, err,
+                                                        sizeof err);
+                        if (wa && wb) {
+                            double num = 0.0, den = 0.0;
+                            for (uint64_t j = 0; j < ra->elements; j++) {
+                                double d = (double)wa[j] - (double)wb[j];
+                                num += d * d;
+                                den += (double)wb[j] * (double)wb[j];
+                            }
+                            printf("vae weight rel L2 %s: %.4g\n", probe_names[i],
+                                   sqrt(num / (den > 0.0 ? den : 1.0)));
+                        }
+                        free(wa);
+                        free(wb);
+                    } else {
+                        printf("vae %s: element counts differ (%llu vs %llu)\n",
+                               probe_names[i],
+                               (unsigned long long)ra->elements,
+                               (unsigned long long)rb->elements);
+                    }
+                }
+            }
             float *a = NULL, *b = NULL;
             CHECK(h3i_vae_decoder_decode(dec, latent, LH, LW, &a, err,
                                          sizeof err), "decode F16");
