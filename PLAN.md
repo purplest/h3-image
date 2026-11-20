@@ -400,6 +400,18 @@ real-weight paths (H3I_DIT_GGUF/H3I_TE_GGUF) + any-quant acceptance to test_gguf
 **Linux gates: core-tests 267/0 (test_layout 113 = A2), linux-check 0 warnings incl.
 __APPLE__ host.c path, smoke 45/0, test-syntax/objc-syntax clean. Mac gate: make check.**
 
+**Phase 4 progress (Linux side done, Mac gate pending):** wrote `model/vae.{c,h}` (2D ViT
+decoder, SPEC §4.5 verbatim: tiled 256/64 decode, registers+zero token, weightless q/k RMS,
+2D RoPE θ=100, scale1/scale2 residuals, raw-neighbour host stitch, ImageNet un-normalize,
+config override) and `io/image.{m,h}` (ImageIO decode + EXIF orientation + alpha-over-black,
+sRGB PNG write). **No new GPU kernel needed** — donor `video_qkv_rope_f32` with rope_half=16
+matches the VAE QKV/RoPE spec exactly. `tests/test_vae`: config checks + weighted decode
+mechanics (finite/dims/bit-repeatable/single-tile/PNG round trip) + optional F16-vs-F32
+PSNR>40dB (H3I_VAE_F32). macos-stubs extended (CG/ImageIO/UTType/CF/NSURL) → objc-syntax
+covers image.m. Linux gates: core 267/0, linux-check 0 warnings, test-syntax/objc-syntax
+clean. **Mac gate: make check** (test_vae activates with the GGUF-set F16 VAE; writes
+build/test_vae_512.png — a smooth synthetic pattern, coherent images come in Phase 8).
+
 ## 6. Verification strategy
 
 | Layer | Where | How |
