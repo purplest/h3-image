@@ -7,3 +7,7 @@ outputs/
 
 # Local rebuild specification — intentionally not committed (user request).
 SPEC.md
+
+# Python bytecode
+__pycache__/
+*.pyc
