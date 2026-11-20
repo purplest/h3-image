@@ -14,6 +14,19 @@ the underscore-less form), and `#pragma STDC FP_CONTRACT OFF` in `io/host.c` + `
 an `-mfma` probe). **Pending: Mac-side `make` gate** (Metal compile of libh3image.a + shaders).
 Next: Phase 1 (GPU runtime audit + test_gpu_ops).
 
+**Phase 1 progress (Linux side done, Mac gate pending):** audited `gpu.m` against SPEC §6.3 —
+safe-math compile (`MTLMathModeSafe`), begin/continue/submit semantics, exact error strings,
+shared-storage tensors + `F_NOCACHE`, dispatch shapes (1d/2d/3d/rows) and MPSGraph thresholds
+(rows≥32 ∧ in≥256 ∧ out≥256) all match; fused SwiGLU MLP and native SDPA confirmed; GQA is the
+custom kernel by default (MPSGraph only via opt-in `H3I_MPS_GQA`). Added the one missing spec
+op: `h3i_gpu_recommended_working_set`. Wrote `tests/test_gpu_ops.c` (command model, tensor I/O,
+add/gate exact, silu-mul/swiglu ≤1, rms/layer ≤2, adaln ≤3, linear both dispatch paths ≤1%,
+SDPA rel L2 <0.02) and `tools/bench_gpu.c` (QKV/MLP/SDPA at 1 MP/4 MP; decode bench deferred to
+Phase 2). Confirmed for Phase 7: donor GQA allocates seq×4 B threadgroup memory and **fails
+above ~8192 rows** — the spec's chunked online softmax (min(seq,4096)×4 B) must be added.
+Linux: syntax-clean incl. new test/tool; host smoke still 45/0. **Mac gate:** `make && make test`
++ `./build/bench_gpu`.
+
 ---
 
 ## 1. Goal and scope

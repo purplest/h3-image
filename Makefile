@@ -34,7 +34,7 @@ QUICK := $(foreach t,$(QUICK_ALL),$(if $(wildcard tests/$(t).c),$(t),))
 # Development convenience only — the macOS build never uses these flags.
 LINUX_CFLAGS := -std=c11 -O3 -D_GNU_SOURCE -Isrc -Itools/linux-stubs
 linux-check:
-	$(CC) -fsyntax-only $(LINUX_CFLAGS) $(LIB_C)
+	$(CC) -fsyntax-only $(LINUX_CFLAGS) $(LIB_C) $(TEST_SRC) $(TOOL_SRC)
 	@mkdir -p build/linux
 	$(CC) $(LINUX_CFLAGS) src/io/host.c tools/linux-stubs/vimage_stub.c \
 		tools/linux-stubs/host_smoke.c -o build/linux/host_smoke -lm

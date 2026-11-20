@@ -93,6 +93,9 @@ int h3i_gpu_continue(h3i_gpu *gpu);
 int h3i_gpu_submit(h3i_gpu *gpu);
 const char *h3i_gpu_error(const h3i_gpu *gpu);
 int h3i_gpu_get_stats(const h3i_gpu *gpu, h3i_gpu_stats *stats);
+/* Metal budget bytes (recommendedMaxWorkingSetSize). SPEC part 6 §3.5;
+ * used by the DiT --weights auto threshold and --info. */
+uint64_t h3i_gpu_recommended_working_set(const h3i_gpu *gpu);
 /* Optional benchmark labels. With H3I_PROFILE set, marks and context teardown
  * print wall time alongside command-buffer GPU time and allocation counters. */
 void h3i_gpu_profile_set_label(h3i_gpu *gpu, const char *label);

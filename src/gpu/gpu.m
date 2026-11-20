@@ -957,6 +957,11 @@ int h3i_gpu_get_stats(const h3i_gpu *opaque, h3i_gpu_stats *stats) {
     return 1;
 }
 
+uint64_t h3i_gpu_recommended_working_set(const h3i_gpu *opaque) {
+    if (!opaque) return 0;
+    return GPU((h3i_gpu *)(void *)opaque).device.recommendedMaxWorkingSetSize;
+}
+
 void h3i_gpu_profile_set_label(h3i_gpu *opaque, const char *label) {
     H3GPU *gpu = GPU(opaque);
     if (!gpu || !label || !*label) return;
