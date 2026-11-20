@@ -196,49 +196,53 @@ static void test_decode(void) {
              * independent of the GPU decoder). A low PSNR with near-identical
              * weights would implicate the decoder; differing weights implicate
              * the files (dtype or checkpoint version). */
-            const char *probe_names[] = {
-                "decoder.x_embedder.weight",
-                "decoder.transformer_blocks.0.attn.to_qkv.weight",
-            };
-            double wrel[2] = {-1.0, -1.0};
+            /* Full weight audit: every tensor present in both files. A low
+             * PSNR with uniformly ~2e-4 rel (F16 rounding) and no non-finite
+             * values would implicate the decoder; a standout tensor or inf
+             * (F16 overflow > 65504) implicates the files. */
             const char *dta = "?";
             const char *dtb = "?";
-            for (int i = 0; i < 2; i++) {
-                const h3i_tensor_rec *ra = h3i_source_find(&source, probe_names[i]);
-                const h3i_tensor_rec *rb = h3i_source_find(&src32, probe_names[i]);
-                if (ra && rb) {
+            double worst = 0.0;
+            const char *worst_name = "(none)";
+            size_t compared = 0, missing = 0, nfa = 0, nfb = 0;
+            for (size_t i = 0; i < source.count; i++) {
+                const h3i_tensor_rec *ra = &source.recs[i];
+                const h3i_tensor_rec *rb = h3i_source_find(&src32, ra->name);
+                if (i == 0) {
                     dta = h3i_type_name(ra->type);
-                    dtb = h3i_type_name(rb->type);
-                    printf("vae %s: gguf-side %s, official-side %s\n",
-                           probe_names[i], dta, dtb);
-                    if (ra->elements == rb->elements) {
-                        float *wa = h3i_source_read_f32(&source, probe_names[i],
-                                                        ra->elements, err,
-                                                        sizeof err);
-                        float *wb = h3i_source_read_f32(&src32, probe_names[i],
-                                                        rb->elements, err,
-                                                        sizeof err);
-                        if (wa && wb) {
-                            double num = 0.0, den = 0.0;
-                            for (uint64_t j = 0; j < ra->elements; j++) {
-                                double d = (double)wa[j] - (double)wb[j];
-                                num += d * d;
-                                den += (double)wb[j] * (double)wb[j];
-                            }
-                            wrel[i] = sqrt(num / (den > 0.0 ? den : 1.0));
-                            printf("vae weight rel L2 %s: %.4g\n", probe_names[i],
-                                   wrel[i]);
-                        }
-                        free(wa);
-                        free(wb);
-                    } else {
-                        printf("vae %s: element counts differ (%llu vs %llu)\n",
-                               probe_names[i],
-                               (unsigned long long)ra->elements,
-                               (unsigned long long)rb->elements);
-                    }
+                    dtb = rb ? h3i_type_name(rb->type) : "?";
                 }
+                if (!rb || !ra->supported || !rb->supported ||
+                    ra->elements != rb->elements) {
+                    missing++;
+                    continue;
+                }
+                float *wa = h3i_source_read_f32(&source, ra->name, ra->elements,
+                                                err, sizeof err);
+                float *wb = h3i_source_read_f32(&src32, ra->name, rb->elements,
+                                                err, sizeof err);
+                if (wa && wb) {
+                    double num = 0.0, den = 0.0;
+                    for (uint64_t j = 0; j < ra->elements; j++) {
+                        if (!isfinite(wa[j])) nfa++;
+                        if (!isfinite(wb[j])) nfb++;
+                        double d = (double)wa[j] - (double)wb[j];
+                        num += d * d;
+                        den += (double)wb[j] * (double)wb[j];
+                    }
+                    double rel = sqrt(num / (den > 0.0 ? den : 1.0));
+                    if (rel > worst) {
+                        worst = rel;
+                        worst_name = ra->name;
+                    }
+                    compared++;
+                }
+                free(wa);
+                free(wb);
             }
+            printf("vae audit: %zu tensors, worst rel %.4g (%s), nonfinite "
+                   "gguf %zu official %zu, unmatched %zu\n",
+                   compared, worst, worst_name, nfa, nfb, missing);
             float *a = NULL, *b = NULL;
             CHECK(h3i_vae_decoder_decode(dec, latent, LH, LW, &a, err,
                                          sizeof err), "decode F16");
@@ -254,8 +258,10 @@ static void test_decode(void) {
                 double psnr = psnr_u8(ua, ub, n);
                 CHECK(psnr > 40.0,
                       "F16 vs F32 PSNR %.1f dB (want > 40); gguf %s vs official "
-                      "%s, weight rel L2 x_embed %.4g qkv %.4g [%s]",
-                      psnr, dta, dtb, wrel[0], wrel[1], f32_path);
+                      "%s; audit %zu tensors worst rel %.4g (%s) nonfinite %zu/%zu "
+                      "unmatched %zu",
+                      psnr, dta, dtb, compared, worst, worst_name, nfa, nfb,
+                      missing);
                 free(ua);
                 free(ub);
             }
