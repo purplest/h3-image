@@ -19,6 +19,14 @@ static inline ushort f32_to_bf16(float x) {
 
 /* ---- dequantization (SPEC §5) ------------------------------------------ */
 
+/* h3-image specific kernels (SPEC §5.2–5.4, §6.3.5).
+ * Concatenated after shaders.metal; uses its helpers (bf16_to_f32,
+ * f32_to_bf16, silu_f, row_tree_sum). Dequantization here is written to be
+ * bit-identical with the CPU reference in weights/gguf.c: fma where the
+ * spec writes fma, everything else separately-rounded F32. */
+
+/* ---- dequantization (SPEC §5) ------------------------------------------ */
+
 enum {
     T_F32 = 0, T_F16 = 1, T_Q8_0 = 8,
     T_Q2_K = 10, T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14,
@@ -229,80 +237,15 @@ DEF_CONVERT(h3i_convert_q5_k_f32,  T_Q5_K, 176, 8,  32, float,  id_f)
 DEF_CONVERT(h3i_convert_q6_k_bf16, T_Q6_K, 210, 8,  32, ushort, f32_to_bf16)
 DEF_CONVERT(h3i_convert_q6_k_f32,  T_Q6_K, 210, 8,  32, float,  id_f)
 
-/* ---- Neural Engine handoff (SPEC §5.4) ---------------------------------- */
-
-struct HandoffParams {
-    uint count;
-    float scale;
-};
-
-struct CheckedParams {
-    uint count;
-    float scale;
-    uint bits;
-};
-
-struct TransposeParams {
-    uint rows;
-    uint columns;
-    uint row_offset;
-    float scale;
-};
-
-kernel void h3i_bf16_to_f16(device ushort *out [[buffer(0)]],
-                            const device ushort *in [[buffer(1)]],
-                            constant HandoffParams &p [[buffer(2)]],
-                            uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.count) {
-        float v = bf16_to_f32(in[gid]) * p.scale;
-        out[gid] = as_type<ushort>(half(v)); /* Metal float→half is RNE */
-    }
-}
-
-kernel void h3i_f16_to_bf16_checked(device ushort *out [[buffer(0)]],
-                                    const device ushort *in [[buffer(1)]],
-                                    device atomic_uint *flag [[buffer(2)]],
-                                    constant CheckedParams &p [[buffer(3)]],
-                                    uint gid [[thread_position_in_grid]])
-{
-    if (gid >= p.count) {
-        return;
-    }
-    float v = float(as_type<half>(in[gid]));
-    if (!isfinite(v)) {
-        atomic_fetch_or_explicit(flag, p.bits, memory_order_relaxed);
-    }
-    float s = v * p.scale;
-    out[gid] = f32_to_bf16(s);
-}
-
-/* 32×32 tiles through threadgroup half[32][33], threadgroup 32×8. */
-kernel void h3i_transpose_bf16_f16(device ushort *out [[buffer(0)]],
-                                   const device ushort *in [[buffer(1)]],
-                                   constant TransposeParams &p [[buffer(2)]],
-                                   uint2 tgid [[threadgroup_position_in_grid]],
-                                   uint2 tid [[thread_position_in_threadgroup]])
-{
-    threadgroup half tile[32][33];
-    uint c0 = tgid.x * 32, r0 = tgid.y * 32;
-    for (uint i = 0; i < 4; i++) {
-        uint r = r0 + tid.y + i * 8;
-        uint c = c0 + tid.x;
-        if (r < p.rows && c < p.columns) {
-            float v = bf16_to_f32(in[(size_t)(p.row_offset + r) * p.columns + c]) * p.scale;
-            tile[tid.y + i * 8][tid.x] = half(v);
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint i = 0; i < 4; i++) {
-        uint c = c0 + tid.y + i * 8;
-        uint r = r0 + tid.x;
-        if (c < p.columns && r < p.rows) {
-            out[(size_t)c * p.rows + r] = as_type<ushort>(tile[tid.x][tid.y + i * 8]);
-        }
-    }
-}
+/* ---- race-free causal GQA attention (SPEC §6.3.5) ------------------------
+ * One threadgroup per (query row, query head), 128 threads.
+ * Phase 1: strided dots → shared scores (≤4096 keys).
+ * Phase 2: max via a dedicated reduction array with full barriers — the
+ *          upstream race (thread 0 overwriting the shared max before other
+ *          SIMD groups read it) cannot occur here.
+ * Phase 3: exp + sum, same pattern.
+ * Phase 4: thread tid owns output dim tid; sequential fma over keys.
+ * >4096 keys: chunked F32 online softmax (running max/sum/output rescale). */
 
 struct GqaParams {
     uint seq;
@@ -451,6 +394,82 @@ kernel void h3i_gqa_causal_bf16(device ushort *out [[buffer(0)]],
     }
 }
 
+/* ---- Neural Engine handoff (SPEC §5.4) ---------------------------------- */
+
+struct HandoffParams {
+    uint count;
+    float scale;
+};
+
+struct CheckedParams {
+    uint count;
+    float scale;
+    uint bits;
+};
+
+struct TransposeParams {
+    uint rows;
+    uint columns;
+    uint row_offset;
+    float scale;
+};
+
+kernel void h3i_bf16_to_f16(device ushort *out [[buffer(0)]],
+                            const device ushort *in [[buffer(1)]],
+                            constant HandoffParams &p [[buffer(2)]],
+                            uint gid [[thread_position_in_grid]])
+{
+    if (gid < p.count) {
+        float v = bf16_to_f32(in[gid]) * p.scale;
+        out[gid] = as_type<ushort>(half(v)); /* Metal float→half is RNE */
+    }
+}
+
+kernel void h3i_f16_to_bf16_checked(device ushort *out [[buffer(0)]],
+                                    const device ushort *in [[buffer(1)]],
+                                    device atomic_uint *flag [[buffer(2)]],
+                                    constant CheckedParams &p [[buffer(3)]],
+                                    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= p.count) {
+        return;
+    }
+    float v = float(as_type<half>(in[gid]));
+    if (!isfinite(v)) {
+        atomic_fetch_or_explicit(flag, p.bits, memory_order_relaxed);
+    }
+    float s = v * p.scale;
+    out[gid] = f32_to_bf16(s);
+}
+
+/* 32×32 tiles through threadgroup half[32][33], threadgroup 32×8. */
+kernel void h3i_transpose_bf16_f16(device ushort *out [[buffer(0)]],
+                                   const device ushort *in [[buffer(1)]],
+                                   constant TransposeParams &p [[buffer(2)]],
+                                   uint2 tgid [[threadgroup_position_in_grid]],
+                                   uint2 tid [[thread_position_in_threadgroup]])
+{
+    threadgroup half tile[32][33];
+    uint c0 = tgid.x * 32, r0 = tgid.y * 32;
+    for (uint i = 0; i < 4; i++) {
+        uint r = r0 + tid.y + i * 8;
+        uint c = c0 + tid.x;
+        if (r < p.rows && c < p.columns) {
+            float v = bf16_to_f32(in[(size_t)(p.row_offset + r) * p.columns + c]) * p.scale;
+            tile[tid.y + i * 8][tid.x] = half(v);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = 0; i < 4; i++) {
+        uint c = c0 + tid.y + i * 8;
+        uint r = r0 + tid.x;
+        if (c < p.columns && r < p.rows) {
+            out[(size_t)c * p.rows + r] = as_type<ushort>(tile[tid.x][tid.y + i * 8]);
+        }
+    }
+}
+
+
 struct QkvRopeParams {
     uint rows;
     uint heads;
@@ -459,471 +478,6 @@ struct QkvRopeParams {
     float eps;
     uint grouped;
 };
-
-struct HeadNormParams {
-    uint rows;
-    uint heads;
-    uint hd;
-    float eps;
-};
-
-struct RopeTextParams {
-    uint rows;
-    uint qheads;
-    uint kvheads;
-    uint hd;
-};
-
-struct AdalnParams {
-    uint rows;
-    uint width;
-    uint slots;
-    uint shift_slot;
-    uint scale_slot;
-    float eps;
-    uint in_off;
-};
-
-struct GateParams {
-    uint rows;
-    uint width;
-    uint slots;
-    uint gate_slot;
-};
-
-struct GateAdalnParams {
-    uint rows;
-    uint width;
-    uint slots;
-    uint gate_slot;
-    uint shift_slot;
-    uint scale_slot;
-    float eps;
-};
-
-struct GeluParams {
-    uint n;
-    uint approximate;
-};
-
-/* ---- linear ------------------------------------------------------------- */
-
-/* Naive F32 linear: one thread per output, sequential fma accumulation in
- * ascending k order (the tiled variants keep the same order). */
-kernel void h3i_linear_f32(device float *out [[buffer(0)]],
-                           const device float *in [[buffer(1)]],
-                           const device float *W [[buffer(2)]],
-                           const device float *b [[buffer(3)]],
-                           constant LinearParams &p [[buffer(4)]],
-                           uint2 gid [[thread_position_in_grid]])
-{
-    uint r = gid.y, o = gid.x;
-    if (r >= p.rows || o >= p.out_w) {
-        return;
-    }
-    float acc = 0.0f;
-    for (uint i = 0; i < p.in_w; i++) {
-        acc = fma(in[r * p.in_w + i], W[o * p.in_w + i], acc);
-    }
-    if (p.has_bias) {
-        acc = acc + b[o];
-    }
-    out[r * p.out_w + o] = acc;
-}
-
-/* 16×16 tiled F32 linear (rows≥16, out=5376, in∈{32,96}): same per-output
- * ascending-k fma order as the naive kernel, so results are bit-identical. */
-kernel void h3i_linear_f32_tiled(device float *out [[buffer(0)]],
-                                 const device float *in [[buffer(1)]],
-                                 const device float *W [[buffer(2)]],
-                                 const device float *b [[buffer(3)]],
-                                 constant LinearParams &p [[buffer(4)]],
-                                 uint2 gid [[thread_position_in_grid]],
-                                 uint2 tid [[thread_position_in_threadgroup]])
-{
-    threadgroup float xt[16][16];
-    threadgroup float wt[16][16];
-    uint r = gid.y, o = gid.x;
-    float acc = 0.0f;
-    for (uint k0 = 0; k0 < p.in_w; k0 += 16) {
-        uint kk = k0 + tid.x;
-        xt[tid.y][tid.x] = (r < p.rows && kk < p.in_w) ? in[r * p.in_w + kk] : 0.0f;
-        wt[tid.y][tid.x] = (o < p.out_w && kk < p.in_w) ? W[o * p.in_w + kk] : 0.0f;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint k = 0; k < 16 && k0 + k < p.in_w; k++) {
-            acc = fma(xt[tid.y][k], wt[tid.x][k], acc);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    if (r < p.rows && o < p.out_w) {
-        if (p.has_bias) {
-            acc = acc + b[o];
-        }
-        out[r * p.out_w + o] = acc;
-    }
-}
-
-/* Patch embed: F32 in/W/b → BF16 out, tiled, same accumulation order. */
-kernel void h3i_linear_f32_tiled_bf16(device ushort *out [[buffer(0)]],
-                                      const device float *in [[buffer(1)]],
-                                      const device float *W [[buffer(2)]],
-                                      const device float *b [[buffer(3)]],
-                                      constant LinearParams &p [[buffer(4)]],
-                                      uint2 gid [[thread_position_in_grid]],
-                                      uint2 tid [[thread_position_in_threadgroup]])
-{
-    threadgroup float xt[16][16];
-    threadgroup float wt[16][16];
-    uint r = gid.y, o = gid.x;
-    float acc = 0.0f;
-    for (uint k0 = 0; k0 < p.in_w; k0 += 16) {
-        uint kk = k0 + tid.x;
-        xt[tid.y][tid.x] = (r < p.rows && kk < p.in_w) ? in[r * p.in_w + kk] : 0.0f;
-        wt[tid.y][tid.x] = (o < p.out_w && kk < p.in_w) ? W[o * p.in_w + kk] : 0.0f;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint k = 0; k < 16 && k0 + k < p.in_w; k++) {
-            acc = fma(xt[tid.y][k], wt[tid.x][k], acc);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    if (r < p.rows && o < p.out_w) {
-        if (p.has_bias) {
-            acc = acc + b[o];
-        }
-        out[r * p.out_w + o] = f32_to_bf16(acc);
-    }
-}
-
-/* Small-shape BF16 linear: one thread per output, F32 fma accumulation,
- * one BF16 rounding at the end. */
-kernel void h3i_linear_bf16(device ushort *out [[buffer(0)]],
-                            const device ushort *in [[buffer(1)]],
-                            const device ushort *W [[buffer(2)]],
-                            const device ushort *b [[buffer(3)]],
-                            constant LinearParams &p [[buffer(4)]],
-                            uint2 gid [[thread_position_in_grid]])
-{
-    uint r = gid.y, o = gid.x;
-    if (r >= p.rows || o >= p.out_w) {
-        return;
-    }
-    float acc = 0.0f;
-    for (uint i = 0; i < p.in_w; i++) {
-        acc = fma(bf16_to_f32(in[r * p.in_w + i]), bf16_to_f32(W[o * p.in_w + i]), acc);
-    }
-    if (p.has_bias) {
-        acc = acc + bf16_to_f32(b[o]);
-    }
-    out[r * p.out_w + o] = f32_to_bf16(acc);
-}
-
-/* ---- elementwise -------------------------------------------------------- */
-
-kernel void h3i_silu_f32(device float *out [[buffer(0)]],
-                         const device float *in [[buffer(1)]],
-                         constant ElemParams &p [[buffer(2)]],
-                         uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.n) {
-        out[gid] = silu_f(in[gid]);
-    }
-}
-
-kernel void h3i_cast_f32_to_bf16(device ushort *out [[buffer(0)]],
-                                 const device float *in [[buffer(1)]],
-                                 constant ElemParams &p [[buffer(2)]],
-                                 uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.n) {
-        out[gid] = f32_to_bf16(in[gid]);
-    }
-}
-
-kernel void h3i_cast_bf16_to_f32(device float *out [[buffer(0)]],
-                                 const device ushort *in [[buffer(1)]],
-                                 constant ElemParams &p [[buffer(2)]],
-                                 uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.n) {
-        out[gid] = bf16_to_f32(in[gid]);
-    }
-}
-
-kernel void h3i_add_bf16(device ushort *out [[buffer(0)]],
-                         const device ushort *l [[buffer(1)]],
-                         const device ushort *r [[buffer(2)]],
-                         constant ElemParams &p [[buffer(3)]],
-                         uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.n) {
-        float a = bf16_to_f32(l[gid]);
-        float b = bf16_to_f32(r[gid]);
-        out[gid] = f32_to_bf16(a + b);
-    }
-}
-
-kernel void h3i_silu_mul_bf16(device ushort *out [[buffer(0)]],
-                              const device ushort *gate [[buffer(1)]],
-                              const device ushort *up [[buffer(2)]],
-                              constant ElemParams &p [[buffer(3)]],
-                              uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.n) {
-        float g = bf16_to_f32(gate[gid]);
-        float u = bf16_to_f32(up[gid]);
-        float s = silu_f(g);
-        out[gid] = f32_to_bf16(s * u);
-    }
-}
-
-kernel void h3i_add_scaled_f32(device float *out [[buffer(0)]],
-                               const device float *l [[buffer(1)]],
-                               const device float *r [[buffer(2)]],
-                               constant AddScaledParams &p [[buffer(3)]],
-                               uint gid [[thread_position_in_grid]])
-{
-    if (gid < p.n) {
-        float a = p.ls * l[gid];
-        float b = p.rs * r[gid];
-        out[gid] = a + b;
-    }
-}
-
-kernel void h3i_gelu_bf16(device ushort *out [[buffer(0)]],
-                          const device ushort *in [[buffer(1)]],
-                          constant GeluParams &p [[buffer(2)]],
-                          uint gid [[thread_position_in_grid]])
-{
-    if (gid >= p.n) {
-        return;
-    }
-    float x = bf16_to_f32(in[gid]);
-    float y;
-    if (p.approximate) {
-        /* GELU-tanh (SPEC §4.0) */
-        float x3 = x * x * x;
-        float inner = 0.7978845608028654f * (x + 0.044715f * x3);
-        if (inner <= -10.0f) {
-            y = 0.0f;
-        } else if (inner >= 10.0f) {
-            y = x;
-        } else {
-            float t = tanh(inner);
-            y = 0.5f * x * (1.0f + t);
-        }
-    } else {
-        /* GELU-erf with Abramowitz–Stegun 7.1.26 (SPEC §4.0) */
-        if (x <= -10.0f) {
-            y = 0.0f;
-        } else if (x >= 10.0f) {
-            y = x;
-        } else {
-            float ax = abs(x);
-            float tt = 1.0f / (1.0f + 0.3275911f * ax);
-            float poly = ((((1.061405429f * tt - 1.453152027f) * tt
-                                    + 1.421413741f) * tt - 0.284496736f) * tt
-                                  + 0.254829592f) * tt;
-            float e = exp(-ax * ax);
-            float erf = 1.0f - poly * e;
-            if (x < 0.0f) {
-                erf = -erf;
-            }
-            y = 0.5f * x * (1.0f + erf);
-        }
-    }
-    out[gid] = f32_to_bf16(y);
-}
-
-/* ---- reductions: one threadgroup per row, 256-way tree ------------------ */
-
-#define ROW_THREADS 256
-
-static inline float row_tree_sum(float partial, uint tid, threadgroup float *scratch)
-{
-    scratch[tid] = partial;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint stride = ROW_THREADS / 2; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-            scratch[tid] += scratch[tid + stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    return scratch[0];
-}
-
-kernel void h3i_rms_norm_f32(device float *out [[buffer(0)]],
-                             const device float *in [[buffer(1)]],
-                             const device float *w [[buffer(2)]],
-                             constant NormParams &p [[buffer(3)]],
-                             uint row [[threadgroup_position_in_grid]],
-                             uint tid [[thread_position_in_threadgroup]])
-{
-    threadgroup float scratch[ROW_THREADS];
-    if (row >= p.rows) {
-        return;
-    }
-    const device float *x = in + row * p.width;
-    float ss = 0.0f;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        ss = fma(x[i], x[i], ss);
-    }
-    ss = row_tree_sum(ss, tid, scratch);
-    float inv = rsqrt(ss / (float)p.width + p.eps);
-    device float *y = out + row * p.width;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float a = x[i] * inv;
-        y[i] = a * w[i];
-    }
-}
-
-kernel void h3i_rms_norm_bf16(device ushort *out [[buffer(0)]],
-                              const device ushort *in [[buffer(1)]],
-                              const device ushort *w [[buffer(2)]],
-                              constant NormParams &p [[buffer(3)]],
-                              uint row [[threadgroup_position_in_grid]],
-                              uint tid [[thread_position_in_threadgroup]])
-{
-    threadgroup float scratch[ROW_THREADS];
-    if (row >= p.rows) {
-        return;
-    }
-    const device ushort *x = in + row * p.width;
-    float ss = 0.0f;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float v = bf16_to_f32(x[i]);
-        ss = fma(v, v, ss);
-    }
-    ss = row_tree_sum(ss, tid, scratch);
-    float inv = rsqrt(ss / (float)p.width + p.eps);
-    device ushort *y = out + row * p.width;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float a = bf16_to_f32(x[i]) * inv;
-        float b = a * bf16_to_f32(w[i]);
-        y[i] = f32_to_bf16(b);
-    }
-}
-
-kernel void h3i_layer_norm_f32(device float *out [[buffer(0)]],
-                               const device float *in [[buffer(1)]],
-                               const device float *w [[buffer(2)]],
-                               const device float *b [[buffer(3)]],
-                               constant NormParams &p [[buffer(4)]],
-                               uint row [[threadgroup_position_in_grid]],
-                               uint tid [[thread_position_in_threadgroup]])
-{
-    threadgroup float scratch[ROW_THREADS];
-    if (row >= p.rows) {
-        return;
-    }
-    const device float *x = in + row * p.width;
-    float s = 0.0f;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        s += x[i];
-    }
-    s = row_tree_sum(s, tid, scratch);
-    float mean = s / (float)p.width;
-    float v = 0.0f;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float d = x[i] - mean;
-        v = fma(d, d, v);
-    }
-    v = row_tree_sum(v, tid, scratch);
-    float inv = rsqrt(v / (float)p.width + p.eps);
-    device float *y = out + row * p.width;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float d = x[i] - mean;
-        float n = d * inv;
-        float a = n * w[i];
-        y[i] = a + b[i];
-    }
-}
-
-kernel void h3i_layer_norm_bf16(device ushort *out [[buffer(0)]],
-                                const device ushort *in [[buffer(1)]],
-                                const device ushort *w [[buffer(2)]],
-                                const device ushort *b [[buffer(3)]],
-                                constant NormParams &p [[buffer(4)]],
-                                uint row [[threadgroup_position_in_grid]],
-                                uint tid [[thread_position_in_threadgroup]])
-{
-    threadgroup float scratch[ROW_THREADS];
-    if (row >= p.rows) {
-        return;
-    }
-    const device ushort *x = in + row * p.width;
-    float s = 0.0f;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        s += bf16_to_f32(x[i]);
-    }
-    s = row_tree_sum(s, tid, scratch);
-    float mean = s / (float)p.width;
-    float v = 0.0f;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float d = bf16_to_f32(x[i]) - mean;
-        v = fma(d, d, v);
-    }
-    v = row_tree_sum(v, tid, scratch);
-    float inv = rsqrt(v / (float)p.width + p.eps);
-    device ushort *y = out + row * p.width;
-    for (uint i = tid; i < p.width; i += ROW_THREADS) {
-        float d = bf16_to_f32(x[i]) - mean;
-        float n = d * inv;
-        /* BF16 LayerNorm uses fma(norm, w, b) (SPEC §4.0). */
-        float r = fma(n, bf16_to_f32(w[i]), bf16_to_f32(b[i]));
-        y[i] = f32_to_bf16(r);
-    }
-}
-
-/* ---- SwiGLU / scale-add -------------------------------------------------- */
-
-kernel void h3i_swiglu_f32(device float *out [[buffer(0)]],
-                           const device float *fused [[buffer(1)]],
-                           constant SwigluParams &p [[buffer(2)]],
-                           uint2 gid [[thread_position_in_grid]])
-{
-    uint r = gid.y, c = gid.x;
-    if (r >= p.rows || c >= p.width) {
-        return;
-    }
-    float g = fused[r * (2 * p.width) + c];
-    float u = fused[r * (2 * p.width) + p.width + c];
-    float s = silu_f(g);
-    out[r * p.width + c] = s * u;
-}
-
-kernel void h3i_swiglu_bf16(device ushort *out [[buffer(0)]],
-                            const device ushort *fused [[buffer(1)]],
-                            constant SwigluParams &p [[buffer(2)]],
-                            uint2 gid [[thread_position_in_grid]])
-{
-    uint r = gid.y, c = gid.x;
-    if (r >= p.rows || c >= p.width) {
-        return;
-    }
-    float g = bf16_to_f32(fused[r * (2 * p.width) + c]);
-    float u = bf16_to_f32(fused[r * (2 * p.width) + p.width + c]);
-    float s = silu_f(g);
-    out[r * p.width + c] = f32_to_bf16(s * u);
-}
-
-kernel void h3i_scale_add_f32(device float *out [[buffer(0)]],
-                              const device float *res [[buffer(1)]],
-                              const device float *branch [[buffer(2)]],
-                              const device float *scale [[buffer(3)]],
-                              constant ScaleAddParams &p [[buffer(4)]],
-                              uint2 gid [[thread_position_in_grid]])
-{
-    uint r = gid.y, c = gid.x;
-    if (r >= p.rows || c >= p.width) {
-        return;
-    }
-    size_t i = (size_t)r * p.width + c;
-    float a = scale[c] * branch[i];
-    out[i] = res[i] + a;
-}
-
-/* ---- QKV split + per-head norm + RoPE ------------------------------------ */
-
 kernel void h3i_qkv_rope_bf16(device ushort *q [[buffer(0)]],
                               device ushort *k [[buffer(1)]],
                               device ushort *v [[buffer(2)]],
