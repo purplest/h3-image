@@ -337,89 +337,96 @@ static void test_gguf_errors(void)
     CHECK(strstr(err, "invalid alignment") != NULL, "msg: %s", err);
 }
 
-static void test_real_weights(void)
+/* Real-weight checks. Paths come from the environment: H3I_DIT_GGUF and
+ * H3I_TE_GGUF point at specific files. The SPEC §6.5 default locations are
+ * only a fallback; absent files skip. Any supported storage type is
+ * accepted (Q2_K..Q8_0, BF16, F16, F32); the exact tensor-count canaries
+ * (528/902) apply only to the known reference repack filenames. */
+static const char *real_weight_path(char *buf, size_t cap, const char *env,
+                                    const char *default_name)
 {
+    const char *override = getenv(env);
+    if (override != NULL && override[0] != '\0') {
+        snprintf(buf, cap, "%s", override);
+        return buf;
+    }
     const char *home = getenv("HOME");
     if (home == NULL) {
-        printf("skip: real weights (no HOME)\n");
-        return;
+        return NULL;
     }
-    char path[4096], err[512];
-    snprintf(path, sizeof path, "%s/models/MiniMax-H3-Image-GGUF/minimax_h3_image_pruned-Q4_K_M.gguf", home);
+    snprintf(buf, cap, "%s/models/MiniMax-H3-Image-GGUF/%s", home, default_name);
+    return buf;
+}
+
+static void check_real_gguf(const char *path, const char *label,
+                            const char *probe_name, uint64_t probe_elements,
+                            uint64_t known_count, const char *known_name)
+{
+    char err[512];
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
-        printf("skip: real GGUF weights (%s absent)\n", path);
+        printf("skip: real %s weights (%s absent)\n", label, path);
         return;
     }
     fclose(f);
     h3i_source s = {0};
-    CHECK(h3i_source_add(&s, path, err, sizeof err), "open real DiT: %s", err);
-    CHECK(s.count == 528, "DiT tensor count %zu (want 528)", s.count);
-    const h3i_tensor_rec *t = h3i_source_find(&s, "blocks.0.attn.qkv_proj.weight");
-    CHECK(t != NULL && t->type == H3I_TYPE_Q4_K, "qkv tensor present, Q4_K");
+    CHECK(h3i_source_add(&s, path, err, sizeof err), "open real %s: %s",
+          label, err);
+    if (strstr(path, known_name) != NULL) {
+        CHECK(s.count == known_count, "%s tensor count %zu (want %llu)",
+              label, s.count, (unsigned long long)known_count);
+    } else {
+        printf("info: %s tensors: %zu\n", label, s.count);
+        CHECK(s.count > 0, "%s has tensors", label);
+    }
+    const h3i_tensor_rec *t = h3i_source_find(&s, probe_name);
+    CHECK(t != NULL && t->supported, "%s probe %s present, supported type",
+          label, probe_name);
     if (t != NULL) {
-        CHECK(t->elements == 21504ULL * 5376ULL, "qkv elements");
-        /* read_raw reads the whole tensor (~65 MB): heap buffer, and only
-         * dequantize the first block after a successful read. */
+        CHECK(t->elements == probe_elements,
+              "%s probe elements %llu (want %llu)", label,
+              (unsigned long long)t->elements,
+              (unsigned long long)probe_elements);
         uint8_t *raw = malloc((size_t)t->bytes);
-        CHECK(raw != NULL, "alloc raw buffer");
+        CHECK(raw != NULL, "alloc %s raw buffer", label);
         if (raw != NULL) {
             if (h3i_source_read_raw(t, raw, 0, 1, err, sizeof err)) {
+                h3i_type_info ti = h3i_type_info_get(t->type);
                 float out[256];
                 h3i_dequant_block(t->type, raw, out);
                 int finite = 1;
-                for (int i = 0; i < 256; i++) {
-                    if (!isfinite(out[i])) {
-                        finite = 0;
-                    }
+                for (int i = 0; i < ti.block_values; i++) {
+                    if (!isfinite(out[i])) finite = 0;
                 }
-                CHECK(finite, "real Q4_K block finite");
+                CHECK(finite, "real %s block finite (%s)", label,
+                      h3i_type_name(t->type));
             } else {
-                CHECK(0, "read raw tensor: %s (weights file truncated?)", err);
+                CHECK(0, "read %s tensor: %s (file truncated?)", label, err);
             }
             free(raw);
         }
     }
     h3i_source_free(&s);
+}
 
-    /* Text encoder GGUF (SPEC §6.5: 902 tensors). The official name must
-     * resolve through the one-way alias on the real file. */
-    snprintf(path, sizeof path,
-             "%s/models/MiniMax-H3-Image-GGUF/qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
-             home);
-    f = fopen(path, "rb");
-    if (f == NULL) {
-        printf("skip: real TE weights (%s absent)\n", path);
-        return;
+static void test_real_weights(void)
+{
+    char path[4096];
+    if (real_weight_path(path, sizeof path, "H3I_DIT_GGUF",
+                         "minimax_h3_image_pruned-Q4_K_M.gguf") != NULL) {
+        check_real_gguf(path, "DiT", "blocks.0.attn.qkv_proj.weight",
+                        21504ULL * 5376ULL, 528,
+                        "minimax_h3_image_pruned-Q4_K_M.gguf");
+    } else {
+        printf("skip: real weights (no HOME)\n");
     }
-    fclose(f);
-    h3i_source te = {0};
-    CHECK(h3i_source_add(&te, path, err, sizeof err), "open real TE: %s", err);
-    CHECK(te.count == 902, "TE tensor count %zu (want 902)", te.count);
-    const h3i_tensor_rec *q = h3i_source_find(
-        &te, "model.language_model.layers.0.self_attn.q_proj.weight");
-    CHECK(q != NULL && q->type == H3I_TYPE_Q2_K,
-          "TE q_proj present via alias, Q2_K");
-    if (q != NULL) {
-        CHECK(q->elements == 8192ULL * 5120ULL, "TE q_proj elements");
-        uint8_t *raw = malloc((size_t)q->bytes);
-        CHECK(raw != NULL, "alloc TE raw buffer");
-        if (raw != NULL) {
-            if (h3i_source_read_raw(q, raw, 0, 1, err, sizeof err)) {
-                float out[256];
-                h3i_dequant_block(q->type, raw, out);
-                int finite = 1;
-                for (int i = 0; i < 256; i++) {
-                    if (!isfinite(out[i])) finite = 0;
-                }
-                CHECK(finite, "real Q2_K block finite");
-            } else {
-                CHECK(0, "read TE tensor: %s (weights file truncated?)", err);
-            }
-            free(raw);
-        }
+    if (real_weight_path(path, sizeof path, "H3I_TE_GGUF",
+                         "qwen3vl_32b_minimax_h3-Q2_K_M.gguf") != NULL) {
+        check_real_gguf(path, "TE",
+                        "model.language_model.layers.0.self_attn.q_proj.weight",
+                        8192ULL * 5120ULL, 902,
+                        "qwen3vl_32b_minimax_h3-Q2_K_M.gguf");
     }
-    h3i_source_free(&te);
 }
 
 #ifdef __APPLE__
