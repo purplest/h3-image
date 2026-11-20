@@ -92,7 +92,7 @@ build/tests/ggml_ref.c.o: tests/ggml_ref.c
 # earlier build schemes can append extra prerequisites to these targets, and
 # a leaked .c source turns the link into "cannot specify -o when generating
 # multiple output files".
-$(TEST_BINS): build/test_%: build/tests/test_%.c.o build/libh3image.a
+$(filter-out build/test_gguf,$(TEST_BINS)): build/test_%: build/tests/test_%.c.o build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
 
 build/test_gguf: build/tests/test_gguf.c.o build/tests/ggml_ref.c.o build/libh3image.a
@@ -180,7 +180,7 @@ build/core/test_gguf: build/core/tests/test_gguf.c.o build/core/tests/ggml_ref.c
 	$(CC) $(CORE_CFLAGS) -o $@ build/core/tests/test_gguf.c.o \
 		build/core/tests/ggml_ref.c.o $(CORE_LIB_OBJS) $(CORE_LDLIBS)
 
-build/core/test_%: build/core/tests/test_%.c.o $(CORE_LIB_OBJS)
+$(filter-out build/core/test_gguf,$(CORE_TEST_BINS)): build/core/test_%: build/core/tests/test_%.c.o $(CORE_LIB_OBJS)
 	$(CC) $(CORE_CFLAGS) -o $@ $< $(CORE_LIB_OBJS) $(CORE_LDLIBS)
 
 core-tests: $(CORE_TEST_BINS)
