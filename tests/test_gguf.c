@@ -443,7 +443,13 @@ static void test_dequant_gpu(void)
                 break;
             }
         }
-        CHECK(bad < 0, "GPU F32 convert type %d bit-exact (diff at %d)", type, bad);
+        CHECK(bad < 0, "GPU F32 convert type %d bit-exact (diff at %d: %08x vs %08x, raw %02x %02x %02x %02x)",
+              type, bad, bad >= 0 ? bits_of(got[7 + bad]) : 0,
+              bad >= 0 ? bits_of(cpu[bad]) : 0,
+              bad >= 0 ? raw[bad * (size_t)info.block_bytes] : 0,
+              bad >= 0 ? raw[bad * (size_t)info.block_bytes + 1] : 0,
+              bad >= 0 ? raw[bad * (size_t)info.block_bytes + 2] : 0,
+              bad >= 0 ? raw[bad * (size_t)info.block_bytes + 3] : 0);
         bad = -1;
         for (size_t i = 0; i < elements; i++) {
             if (gotb[i] != f_bf16(cpu[i])) {
@@ -451,7 +457,9 @@ static void test_dequant_gpu(void)
                 break;
             }
         }
-        CHECK(bad < 0, "GPU BF16 convert type %d bit-exact (diff at %d)", type, bad);
+        CHECK(bad < 0, "GPU BF16 convert type %d bit-exact (diff at %d: %04x vs %04x)",
+              type, bad, bad >= 0 ? gotb[bad] : 0,
+              bad >= 0 ? f_bf16(cpu[bad]) : 0);
 
         h3i_gpu_tensor_free(traw);
         h3i_gpu_tensor_free(tf);
