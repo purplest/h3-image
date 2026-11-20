@@ -388,6 +388,18 @@ Each phase lists: work → files, exit gate → tests/acceptance ids from SPEC �
   mlpin <3%, cache reuse, ane_rows). `tools/ane_models.py` reference builder.
 - **Gate: A13** (PSNR ≥ ~30 dB vs GPU, deterministic, no unhandled overflow). macOS 15+.
 
+**Phase 3 progress (Linux side done, Mac gate pending):** adopted main's M3-verified
+`model/layout.{c,h}` (canvas, patchify, packed sequence, PDD schedule, RoPE tables, tile
+plan, unit_to_u8) + image `io/host.{c,h}` (round_f16, PCG32/Box-Muller) + `test_layout` +
+`vectors.h`/`gen_vectors.py`. Donor video host math split into `io/video_host.{c,h}`
+(interim): colliding symbols renamed `h3i_video_layout*` / `h3i_video_schedule_build` /
+`h3i_video_sigma_schedule`, dit/dit_schedule adapted; RNG/resize/euler moved to the new
+host.c (resize Apple-guarded). host_smoke passes the same spec-derived expected bits
+against the adopted RNG → swap proven bit-identical. User commit f4f0db6 added env-var
+real-weight paths (H3I_DIT_GGUF/H3I_TE_GGUF) + any-quant acceptance to test_gguf — kept.
+**Linux gates: core-tests 267/0 (test_layout 113 = A2), linux-check 0 warnings incl.
+__APPLE__ host.c path, smoke 45/0, test-syntax/objc-syntax clean. Mac gate: make check.**
+
 ## 6. Verification strategy
 
 | Layer | Where | How |
