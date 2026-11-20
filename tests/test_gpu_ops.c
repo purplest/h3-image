@@ -83,14 +83,14 @@ static void rms_reference(const uint16_t *x, const uint16_t *w, size_t rows,
     for (size_t r = 0; r < rows; r++) {
         double ss = 0.0;
         for (size_t c = 0; c < width; c++) {
-            double v = from_bf16(x[r * width + c]);
+            double v = (double)from_bf16(x[r * width + c]);
             ss += v * v;
         }
         double inv = 1.0 / sqrt(ss / (double)width + eps);
         for (size_t c = 0; c < width; c++)
             out[r * width + c] =
-                to_bf16((float)(from_bf16(x[r * width + c]) * inv *
-                                from_bf16(w[c])));
+                to_bf16((float)((double)from_bf16(x[r * width + c]) * inv *
+                                (double)from_bf16(w[c])));
     }
 }
 
@@ -99,19 +99,21 @@ static void layer_norm_reference(const uint16_t *x, const uint16_t *w,
                                  double eps, uint16_t *out) {
     for (size_t r = 0; r < rows; r++) {
         double mean = 0.0;
-        for (size_t c = 0; c < width; c++) mean += from_bf16(x[r * width + c]);
+        for (size_t c = 0; c < width; c++)
+            mean += (double)from_bf16(x[r * width + c]);
         mean /= (double)width;
         double var = 0.0;
         for (size_t c = 0; c < width; c++) {
-            double d = from_bf16(x[r * width + c]) - mean;
+            double d = (double)from_bf16(x[r * width + c]) - mean;
             var += d * d;
         }
         var /= (double)width;
         double inv = 1.0 / sqrt(var + eps);
         for (size_t c = 0; c < width; c++) {
-            double norm = (from_bf16(x[r * width + c]) - mean) * inv;
+            double norm = ((double)from_bf16(x[r * width + c]) - mean) * inv;
             out[r * width + c] =
-                to_bf16((float)(norm * from_bf16(w[c]) + from_bf16(b[c])));
+                to_bf16((float)(norm * (double)from_bf16(w[c]) +
+                                (double)from_bf16(b[c])));
         }
     }
 }
@@ -200,7 +202,7 @@ static void test_silu_mul(h3i_gpu *gpu) {
     CHECK(h3i_gpu_tensor_read_bf16(to, got, N) == 1, "silu_mul read");
     int worst = 0;
     for (size_t i = 0; i < N; i++) {
-        double gd = from_bf16(g[i]), ud = from_bf16(u[i]);
+        double gd = (double)from_bf16(g[i]), ud = (double)from_bf16(u[i]);
         uint16_t want = to_bf16((float)(silu_d(gd) * ud));
         int steps = bf16_steps(got[i], want);
         if (steps > worst) worst = steps;
@@ -225,8 +227,8 @@ static void test_swiglu(h3i_gpu *gpu) {
     int worst = 0;
     for (size_t r = 0; r < ROWS; r++)
         for (size_t c = 0; c < WIDTH; c++) {
-            double gate = from_bf16(fused[r * WIDTH * 2 + c]);
-            double up = from_bf16(fused[r * WIDTH * 2 + WIDTH + c]);
+            double gate = (double)from_bf16(fused[r * WIDTH * 2 + c]);
+            double up = (double)from_bf16(fused[r * WIDTH * 2 + WIDTH + c]);
             uint16_t want = to_bf16((float)(silu_d(gate) * up));
             int steps = bf16_steps(got[r * WIDTH + c], want);
             if (steps > worst) worst = steps;
@@ -267,7 +269,7 @@ static void test_rms_norm_f32(h3i_gpu *gpu) {
     size_t n = (size_t)ROWS * WIDTH;
     float *x = malloc(n * 4), *w = malloc(WIDTH * 4), *got = malloc(n * 4);
     fill_f32(x, n, -2.0, 2.0);
-    fill_f32(w, WIDTH, 0.5f, 1.5f);
+    fill_f32(w, WIDTH, 0.5, 1.5);
     h3i_gpu_tensor *tx = h3i_gpu_tensor_from_f32(gpu, x, n);
     h3i_gpu_tensor *tw = h3i_gpu_tensor_from_f32(gpu, w, WIDTH);
     h3i_gpu_tensor *to = h3i_gpu_tensor_new_f32(gpu, n);
@@ -279,11 +281,12 @@ static void test_rms_norm_f32(h3i_gpu *gpu) {
     double num = 0.0, den = 0.0;
     for (size_t r = 0; r < ROWS; r++) {
         double ss = 0.0;
-        for (size_t c = 0; c < WIDTH; c++) ss += (double)x[r * WIDTH + c] * x[r * WIDTH + c];
-        double inv = 1.0 / sqrt(ss / WIDTH + 1e-5);
+        for (size_t c = 0; c < WIDTH; c++)
+            ss += (double)x[r * WIDTH + c] * (double)x[r * WIDTH + c];
+        double inv = 1.0 / sqrt(ss / (double)WIDTH + 1e-5);
         for (size_t c = 0; c < WIDTH; c++) {
-            double want = x[r * WIDTH + c] * inv * w[c];
-            double d = got[r * WIDTH + c] - want;
+            double want = (double)x[r * WIDTH + c] * inv * (double)w[c];
+            double d = (double)got[r * WIDTH + c] - want;
             num += d * d;
             den += want * want;
         }
@@ -353,9 +356,9 @@ static void test_adaln_gate(h3i_gpu *gpu) {
     for (size_t r = 0; r < ROWS; r++) {
         size_t base = (size_t)row_map[r] * SLOTS * WIDTH;
         for (size_t c = 0; c < WIDTH; c++) {
-            double norm = from_bf16(want[r * WIDTH + c]);
-            double scale = from_bf16(mod[base + WIDTH + c]);
-            double shift = from_bf16(mod[base + c]);
+            double norm = (double)from_bf16(want[r * WIDTH + c]);
+            double scale = (double)from_bf16(mod[base + WIDTH + c]);
+            double shift = (double)from_bf16(mod[base + c]);
             uint16_t expect = to_bf16((float)(norm * (1.0 + scale) + shift));
             int steps = bf16_steps(got[r * WIDTH + c], expect);
             if (steps > worst) worst = steps;
@@ -405,13 +408,15 @@ static void linear_check(h3i_gpu *gpu, uint32_t rows, uint32_t in,
     if (bf16) {
         fill_bf16(x, xn, -1.0, 1.0);
         fill_bf16(w, wn, -scale, scale);
-        for (size_t i = 0; i < xn; i++) xd[i] = from_bf16(((uint16_t *)x)[i]);
-        for (size_t i = 0; i < wn; i++) wd[i] = from_bf16(((uint16_t *)w)[i]);
+        for (size_t i = 0; i < xn; i++)
+            xd[i] = (double)from_bf16(((uint16_t *)x)[i]);
+        for (size_t i = 0; i < wn; i++)
+            wd[i] = (double)from_bf16(((uint16_t *)w)[i]);
     } else {
         fill_f32(x, xn, -1.0, 1.0);
         fill_f32(w, wn, -scale, scale);
-        for (size_t i = 0; i < xn; i++) xd[i] = ((float *)x)[i];
-        for (size_t i = 0; i < wn; i++) wd[i] = ((float *)w)[i];
+        for (size_t i = 0; i < xn; i++) xd[i] = (double)((float *)x)[i];
+        for (size_t i = 0; i < wn; i++) wd[i] = (double)((float *)w)[i];
     }
     h3i_gpu_tensor *tx = bf16 ? h3i_gpu_tensor_from_bf16(gpu, x, xn)
                               : h3i_gpu_tensor_from_f32(gpu, x, xn);
@@ -423,13 +428,13 @@ static void linear_check(h3i_gpu *gpu, uint32_t rows, uint32_t in,
         if (bf16) {
             uint16_t *b = malloc(out * 2);
             fill_bf16(b, out, -0.1, 0.1);
-            for (uint32_t i = 0; i < out; i++) bd[i] = from_bf16(b[i]);
+            for (uint32_t i = 0; i < out; i++) bd[i] = (double)from_bf16(b[i]);
             tb = h3i_gpu_tensor_from_bf16(gpu, b, out);
             free(b);
         } else {
             float *b = malloc(out * 4);
             fill_f32(b, out, -0.1, 0.1);
-            for (uint32_t i = 0; i < out; i++) bd[i] = b[i];
+            for (uint32_t i = 0; i < out; i++) bd[i] = (double)b[i];
             tb = h3i_gpu_tensor_from_f32(gpu, b, out);
             free(b);
         }
@@ -451,8 +456,9 @@ static void linear_check(h3i_gpu *gpu, uint32_t rows, uint32_t in,
             double acc = bd ? bd[o] : 0.0;
             for (uint32_t i = 0; i < in; i++)
                 acc += xd[(size_t)r * in + i] * wd[(size_t)o * in + i];
-            double gotd = bf16 ? from_bf16(((uint16_t *)got)[(size_t)r * out + o])
-                               : ((float *)got)[(size_t)r * out + o];
+            double gotd = bf16
+                ? (double)from_bf16(((uint16_t *)got)[(size_t)r * out + o])
+                : (double)((float *)got)[(size_t)r * out + o];
             double err = fabs(gotd - acc);
             if (err > max_err) max_err = err;
             if (fabs(acc) > max_ref) max_ref = fabs(acc);
@@ -487,12 +493,12 @@ static void test_sdpa(h3i_gpu *gpu) {
     double scores[SEQ];
     for (int i = 0; i < SEQ; i++)
         for (int h = 0; h < HEADS; h++) {
-            double max_score = -INFINITY;
+            double max_score = -(double)INFINITY;
             for (int j = 0; j < SEQ; j++) {
                 double dot = 0.0;
                 for (int d = 0; d < HD; d++)
-                    dot += from_bf16(q[((size_t)i * HEADS + h) * HD + d]) *
-                           from_bf16(k[((size_t)j * HEADS + h) * HD + d]);
+                    dot += (double)from_bf16(q[((size_t)i * HEADS + h) * HD + d]) *
+                           (double)from_bf16(k[((size_t)j * HEADS + h) * HD + d]);
                 scores[j] = dot * (double)scale;
                 if (scores[j] > max_score) max_score = scores[j];
             }
@@ -505,9 +511,9 @@ static void test_sdpa(h3i_gpu *gpu) {
                 double acc = 0.0;
                 for (int j = 0; j < SEQ; j++)
                     acc += scores[j] / sum *
-                           from_bf16(v[((size_t)j * HEADS + h) * HD + d]);
+                           (double)from_bf16(v[((size_t)j * HEADS + h) * HD + d]);
                 size_t idx = ((size_t)i * HEADS + h) * HD + d;
-                double gotd = from_bf16(got[idx]);
+                double gotd = (double)from_bf16(got[idx]);
                 num += (gotd - acc) * (gotd - acc);
                 den += acc * acc;
             }

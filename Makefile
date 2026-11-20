@@ -32,7 +32,11 @@ QUICK := $(foreach t,$(QUICK_ALL),$(if $(wildcard tests/$(t).c),$(t),))
 # Linux host-test harness (PLAN.md Phase 0b): syntax-check every pure-C TU
 # (Accelerate stub) and run host-math known-answer tests without Metal.
 # Development convenience only — the macOS build never uses these flags.
-LINUX_CFLAGS := -std=c11 -O3 -D_GNU_SOURCE -Isrc -Itools/linux-stubs
+# Mirror the macOS warning set exactly so conversion issues surface here
+# first. (Tests are additionally kept clean under -Wdouble-promotion.)
+LINUX_CFLAGS := -std=c11 -O3 -Wall -Wextra -Wpedantic -Wshadow -Wconversion \
+	-Wno-sign-conversion -D_GNU_SOURCE -D_DARWIN_C_SOURCE \
+	-Isrc -Itools/linux-stubs
 linux-check:
 	$(CC) -fsyntax-only $(LINUX_CFLAGS) $(LIB_C) $(TEST_SRC) $(TOOL_SRC)
 	@mkdir -p build/linux
