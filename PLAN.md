@@ -49,6 +49,11 @@ bit-exact vs ggml oracle all 9 types, test_weights 88), linux-check 0 warnings +
 test-syntax/objc-syntax/metal-lint clean, all 14 spec error strings verified present.
 **Mac gate:** `make && make check` (test_gpu_ops, test_gguf GPU==CPU + real-weight counts if
 weights present, test_weights, test_stream) + `make tools && ./build/inspect <weights>`.
+**CLOSED — ALL TESTS PASSED on Mac.** A1 complete (CPU bit-exact vs ggml oracle + GPU
+bit-exact vs CPU, all 9 types). Gate debugging: stale Phase-1 .d files polluted $^ link
+commands (explicit link inputs now); tests-build didn't build the combined shaders (fixed);
+test_gguf GPU half had a heap overflow (71 floats read into a 64-float buffer) corrupting
+the reference data — GPU kernels were correct (fixed, af2d019).
 
 ---
 

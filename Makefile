@@ -162,9 +162,9 @@ ifeq ($(shell uname -m),x86_64)
 CORE_CFLAGS += -mfma
 endif
 
-CORE_SRCS = src/app/paths.c src/weights/gguf.c src/weights/safetensors.c \
-            src/weights/source.c src/weights/model.c
-CORE_TEST_NAMES = test_core test_gguf test_weights
+CORE_SRCS = src/app/paths.c src/io/host.c src/weights/gguf.c src/weights/safetensors.c \
+            src/weights/source.c src/weights/model.c src/model/layout.c
+CORE_TEST_NAMES = test_core test_gguf test_weights test_layout
 CORE_LIB_OBJS = $(patsubst %,build/core/%.o,$(CORE_SRCS))
 CORE_TEST_BINS = $(addprefix build/core/,$(CORE_TEST_NAMES))
 
@@ -193,6 +193,7 @@ LINUX_CFLAGS := -std=c11 -O3 -Wall -Wextra -Wpedantic -Wshadow -Wconversion \
 	-Isrc -Itools/linux-stubs
 linux-check:
 	$(CC) -fsyntax-only $(LINUX_CFLAGS) $(LIB_C_SRCS) $(TEST_SRCS) $(TOOL_SRCS)
+	$(CC) -fsyntax-only $(LINUX_CFLAGS) -D__APPLE__ src/io/host.c
 	@mkdir -p build/linux
 	$(CC) $(LINUX_CFLAGS) src/io/host.c tools/linux-stubs/vimage_stub.c \
 		tools/linux-stubs/host_smoke.c -o build/linux/host_smoke -lm

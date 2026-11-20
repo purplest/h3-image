@@ -2,7 +2,7 @@
 #define H3I_DIT_H
 
 #include "gpu/gpu.h"
-#include "io/host.h"
+#include "io/video_host.h"
 #include "model/text_encoder.h"
 
 #include <stddef.h>
@@ -23,8 +23,8 @@ typedef int (*h3i_dit_preview)(int completed_steps, int total_steps,
 h3i_dit *h3i_dit_load_t2va(const char *weight_directory,
                          const char *shader_source_path,
                          const h3i_text_embedding *text,
-                         const h3i_layout *layout,
-                         const h3i_sigma_schedule *sigmas,
+                         const h3i_video_layout *layout,
+                         const h3i_video_sigma_schedule *sigmas,
                          unsigned active_blocks,
                          unsigned core_reuse_interval,
                          int token_reduction,
@@ -51,8 +51,8 @@ h3i_dit *h3i_dit_load_conditioned(
                          const char *weight_directory,
                          const char *shader_source_path,
                          const h3i_text_embedding *text,
-                         const h3i_layout *layout,
-                         const h3i_sigma_schedule *sigmas,
+                         const h3i_video_layout *layout,
+                         const h3i_video_sigma_schedule *sigmas,
                          unsigned active_blocks,
                          unsigned core_reuse_interval,
                          int token_reduction,

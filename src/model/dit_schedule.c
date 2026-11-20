@@ -76,7 +76,7 @@ static void free_tensor(h3i_gpu_tensor **tensor) {
 }
 
 static int prepare_rows(h3i_dit_schedule *schedule,
-                        const h3i_sigma_schedule *sigmas,
+                        const h3i_video_sigma_schedule *sigmas,
                         int visual_condition, int audio_condition,
                         float **features_out, char *error,
                         size_t error_size) {
@@ -236,7 +236,7 @@ cleanup:
 
 h3i_dit_schedule *h3i_dit_schedule_precompute(
     const h3i_weight_store *weights, h3i_gpu *gpu,
-    const h3i_sigma_schedule *sigmas, int visual_condition,
+    const h3i_video_sigma_schedule *sigmas, int visual_condition,
     int audio_condition,
     h3i_dit_schedule_progress progress, void *progress_opaque,
     char *error, size_t error_size) {
@@ -432,7 +432,7 @@ const h3i_gpu_tensor *h3i_dit_schedule_final(const h3i_dit_schedule *schedule) {
 }
 
 int h3i_dit_schedule_row_map(const h3i_dit_schedule *schedule, int step,
-                            const h3i_layout *layout,
+                            const h3i_video_layout *layout,
                             const uint8_t *text_tags, size_t text_tag_count,
                             uint32_t *rows, size_t row_count) {
     if (!schedule || step < 0 || step >= schedule->steps || !layout || !rows ||

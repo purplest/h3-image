@@ -2,7 +2,7 @@
 #define H3I_DIT_SCHEDULE_H
 
 #include "gpu/gpu.h"
-#include "io/host.h"
+#include "io/video_host.h"
 #include "weights/weights.h"
 
 #include <stddef.h>
@@ -24,7 +24,7 @@ typedef void (*h3i_dit_schedule_progress)(int completed_blocks,
  * next is loaded. */
 h3i_dit_schedule *h3i_dit_schedule_precompute(
     const h3i_weight_store *weights, h3i_gpu *gpu,
-    const h3i_sigma_schedule *sigmas, int visual_condition,
+    const h3i_video_sigma_schedule *sigmas, int visual_condition,
     int audio_condition,
     h3i_dit_schedule_progress progress, void *progress_opaque,
     char *error, size_t error_size);
@@ -50,7 +50,7 @@ const h3i_gpu_tensor *h3i_dit_schedule_final(const h3i_dit_schedule *schedule);
  * NULL (all tag 1), or one tag per text row. Qwen vision presentation spans use
  * tag 0. Segment kinds select target/condition timesteps and modality tags. */
 int h3i_dit_schedule_row_map(const h3i_dit_schedule *schedule, int step,
-                            const h3i_layout *layout,
+                            const h3i_video_layout *layout,
                             const uint8_t *text_tags, size_t text_tag_count,
                             uint32_t *rows, size_t row_count);
 

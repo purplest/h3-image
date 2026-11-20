@@ -36,13 +36,13 @@ int main(void) {
     h3i_rng rng;
     h3i_rng_seed(&rng, 1);
     for (size_t i = 0; i < sizeof(expected_u32_seed1) / sizeof(uint32_t); i++) {
-        uint32_t got = h3i_rng_u32(&rng);
+        uint32_t got = h3i_rng_next_u32(&rng);
         CHECK(got == expected_u32_seed1[i], "seed1 u32[%zu]: got %u want %u", i,
               got, expected_u32_seed1[i]);
     }
     h3i_rng_seed(&rng, 42);
     for (size_t i = 0; i < sizeof(expected_u32_seed42) / sizeof(uint32_t); i++) {
-        uint32_t got = h3i_rng_u32(&rng);
+        uint32_t got = h3i_rng_next_u32(&rng);
         CHECK(got == expected_u32_seed42[i], "seed42 u32[%zu]: got %u want %u",
               i, got, expected_u32_seed42[i]);
     }
@@ -66,8 +66,8 @@ int main(void) {
     /* Spare carries across fill calls: fill(3)+fill(2) == fill(5). */
     float split[5];
     h3i_rng_seed(&rng, 7);
-    h3i_rng_fill_normal(&rng, split, 3);
-    h3i_rng_fill_normal(&rng, split + 3, 2);
+    h3i_rng_fill(&rng, split, 3);
+    h3i_rng_fill(&rng, split + 3, 2);
     for (size_t i = 0; i < 5; i++) {
         CHECK(float_bits(split[i]) == expected_fill5_seed7[i],
               "fill carry[%zu]: got %08x want %08x", i, float_bits(split[i]),

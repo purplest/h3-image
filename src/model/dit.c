@@ -1,5 +1,7 @@
 #include "model/dit.h"
 
+#include "io/host.h"
+
 #include "model/dit_schedule.h"
 #include "weights/weights.h"
 
@@ -105,8 +107,8 @@ struct h3i_dit {
     int core_residual_ready;
     unsigned active_block_count;
     uint8_t block_active[H3I_DIT_BLOCKS];
-    h3i_layout layout;
-    h3i_sigma_schedule sigmas;
+    h3i_video_layout layout;
+    h3i_video_sigma_schedule sigmas;
     int latent_t;
     int latent_h;
     int latent_w;
@@ -263,7 +265,7 @@ static h3i_gpu_tensor *f2(h3i_dit *dit, const char *name, uint64_t rows,
                               error, error_size);
 }
 
-static int copy_layout(h3i_dit *dit, const h3i_layout *layout,
+static int copy_layout(h3i_dit *dit, const h3i_video_layout *layout,
                        char *error, size_t error_size) {
     dit->layout = *layout;
     dit->layout.segments = NULL;
@@ -285,13 +287,13 @@ static int copy_layout(h3i_dit *dit, const h3i_layout *layout,
     return 1;
 oom:
     fail(error, error_size, "out of memory copying packed H3 layout");
-    h3i_layout_free(&dit->layout);
+    h3i_video_layout_free(&dit->layout);
     return 0;
 }
 
 static int validate_layout(h3i_dit *dit, const h3i_text_embedding *text,
                            char *error, size_t error_size) {
-    const h3i_layout *layout = &dit->layout;
+    const h3i_video_layout *layout = &dit->layout;
     if (!text || !text->values || text->width != TEXT_DIM || !text->tokens ||
         layout->signature[0] != (int)text->tokens ||
         !layout->segments || layout->segment_count < 3 ||
@@ -1558,8 +1560,8 @@ static void schedule_report(int completed, int total, void *opaque) {
 static h3i_dit *load_dit(const char *weight_directory,
                         const char *shader_source_path,
                         const h3i_text_embedding *text,
-                        const h3i_layout *layout,
-                        const h3i_sigma_schedule *sigmas,
+                        const h3i_video_layout *layout,
+                        const h3i_video_sigma_schedule *sigmas,
                         unsigned active_blocks,
                         unsigned core_reuse_interval,
                         int token_reduction,
@@ -1700,8 +1702,8 @@ failed:
 h3i_dit *h3i_dit_load_t2va(const char *weight_directory,
                          const char *shader_source_path,
                          const h3i_text_embedding *text,
-                         const h3i_layout *layout,
-                         const h3i_sigma_schedule *sigmas,
+                         const h3i_video_layout *layout,
+                         const h3i_video_sigma_schedule *sigmas,
                          unsigned active_blocks,
                          unsigned core_reuse_interval,
                          int token_reduction,
@@ -1742,8 +1744,8 @@ h3i_dit *h3i_dit_load_conditioned(
                          const char *weight_directory,
                          const char *shader_source_path,
                          const h3i_text_embedding *text,
-                         const h3i_layout *layout,
-                         const h3i_sigma_schedule *sigmas,
+                         const h3i_video_layout *layout,
+                         const h3i_video_sigma_schedule *sigmas,
                          unsigned active_blocks,
                          unsigned core_reuse_interval,
                          int token_reduction,
@@ -3056,7 +3058,7 @@ void h3i_dit_free(h3i_dit *dit) {
     }
     h3i_gpu_free(dit->gpu);
     h3i_weight_store_free(dit->weights);
-    h3i_layout_free(&dit->layout);
+    h3i_video_layout_free(&dit->layout);
     free(dit);
 }
 
