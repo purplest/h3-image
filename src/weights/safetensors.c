@@ -1,584 +1,669 @@
+/* Safetensors header parsing (SPEC §3): u64 LE header size, one JSON object,
+ * tensor data after it. Hand-written JSON with the spec's exact semantics:
+ * digits-only unsigned integers, control chars rejected in strings, escapes
+ * incl. \uXXXX encoded to UTF-8 1–3 bytes (surrogate pairs NOT combined),
+ * skipped scalars are unvalidated runs, duplicate keys not detected. */
 #include "weights/safetensors.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define H3I_ST_MAX_HEADER (256u * 1024u * 1024u)
+#include "app/error.h"
+#include "weights/gguf.h"
 
 typedef struct {
-    const char *at;
+    const char *p;
     const char *end;
+    const char *path;
     char *error;
-    size_t error_size;
-} h3i_json_cursor;
+    size_t es;
+    int failed;
+} json_ctx;
 
-static int h3i_json_fail(h3i_json_cursor *cursor, const char *message) {
-    if (cursor->error && cursor->error_size) {
-        snprintf(cursor->error, cursor->error_size, "%s", message);
+static void jfail(json_ctx *c, const char *fmt, ...) H3I_PRINTF_LIKE(2, 3);
+static void jfail(json_ctx *c, const char *fmt, ...)
+{
+    if (c->failed) {
+        return;
     }
-    return 0;
+    c->failed = 1;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(c->error, c->es, fmt, ap);
+    va_end(ap);
 }
 
-static void h3i_json_ws(h3i_json_cursor *cursor) {
-    while (cursor->at < cursor->end &&
-           (*cursor->at == ' ' || *cursor->at == '\n' ||
-            *cursor->at == '\r' || *cursor->at == '\t')) cursor->at++;
+static void j_ws(json_ctx *c)
+{
+    while (c->p < c->end &&
+           (*c->p == ' ' || *c->p == '\n' || *c->p == '\r' || *c->p == '\t')) {
+        c->p++;
+    }
 }
 
-static int h3i_json_take(h3i_json_cursor *cursor, char expected) {
-    h3i_json_ws(cursor);
-    if (cursor->at >= cursor->end || *cursor->at != expected) {
-        return h3i_json_fail(cursor, "malformed safetensors JSON header");
+static int j_hex4(json_ctx *c, uint32_t *out)
+{
+    if (c->end - c->p < 4) {
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
     }
-    cursor->at++;
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++) {
+        char ch = c->p[i];
+        uint32_t d;
+        if (ch >= '0' && ch <= '9') {
+            d = (uint32_t)(ch - '0');
+        } else if (ch >= 'a' && ch <= 'f') {
+            d = (uint32_t)(ch - 'a') + 10;
+        } else if (ch >= 'A' && ch <= 'F') {
+            d = (uint32_t)(ch - 'A') + 10;
+        } else {
+            jfail(c, "%s: invalid safetensors header", c->path);
+            return 0;
+        }
+        v = (v << 4) | d;
+    }
+    c->p += 4;
+    *out = v;
     return 1;
 }
 
-static int h3i_hex(char value) {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-    return -1;
+/* Append a code point as UTF-8 (1–3 bytes; surrogates encoded as-is). */
+static void utf8_append(char *buf, size_t *n, uint32_t cp)
+{
+    if (cp < 0x80) {
+        buf[(*n)++] = (char)cp;
+    } else if (cp < 0x800) {
+        buf[(*n)++] = (char)(0xC0 | (cp >> 6));
+        buf[(*n)++] = (char)(0x80 | (cp & 0x3F));
+    } else {
+        buf[(*n)++] = (char)(0xE0 | (cp >> 12));
+        buf[(*n)++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[(*n)++] = (char)(0x80 | (cp & 0x3F));
+    }
 }
 
-static char *h3i_json_string(h3i_json_cursor *cursor) {
-    h3i_json_ws(cursor);
-    if (cursor->at >= cursor->end || *cursor->at != '"') {
-        h3i_json_fail(cursor, "expected JSON string");
+/* Parse a JSON string into a malloc'd NUL-terminated UTF-8 buffer. */
+static char *j_string(json_ctx *c)
+{
+    if (c->failed || c->p >= c->end || *c->p != '"') {
+        jfail(c, "%s: invalid safetensors header", c->path);
         return NULL;
     }
-    cursor->at++;
-    size_t maximum = (size_t)(cursor->end - cursor->at);
-    char *result = malloc(maximum + 1);
-    if (!result) {
-        h3i_json_fail(cursor, "out of memory parsing safetensors header");
+    c->p++;
+    size_t cap = 32, n = 0;
+    char *buf = malloc(cap);
+    if (buf == NULL) {
+        jfail(c, "%s: out of memory", c->path);
         return NULL;
     }
-    size_t length = 0;
-    while (cursor->at < cursor->end && *cursor->at != '"') {
-        unsigned char value = (unsigned char)*cursor->at++;
-        if (value == '\\') {
-            if (cursor->at >= cursor->end) goto malformed;
-            value = (unsigned char)*cursor->at++;
-            switch (value) {
-                case '"': result[length++] = '"'; break;
-                case '\\': result[length++] = '\\'; break;
-                case '/': result[length++] = '/'; break;
-                case 'b': result[length++] = '\b'; break;
-                case 'f': result[length++] = '\f'; break;
-                case 'n': result[length++] = '\n'; break;
-                case 'r': result[length++] = '\r'; break;
-                case 't': result[length++] = '\t'; break;
-                case 'u': {
-                    if (cursor->end - cursor->at < 4) goto malformed;
-                    int codepoint = 0;
-                    for (int index = 0; index < 4; index++) {
-                        int digit = h3i_hex(cursor->at[index]);
-                        if (digit < 0) goto malformed;
-                        codepoint = codepoint * 16 + digit;
-                    }
-                    cursor->at += 4;
-                    if (codepoint < 0x80) {
-                        result[length++] = (char)codepoint;
-                    } else if (codepoint < 0x800) {
-                        result[length++] = (char)(0xc0 | (codepoint >> 6));
-                        result[length++] = (char)(0x80 | (codepoint & 0x3f));
-                    } else {
-                        result[length++] = (char)(0xe0 | (codepoint >> 12));
-                        result[length++] = (char)(0x80 | ((codepoint >> 6) & 0x3f));
-                        result[length++] = (char)(0x80 | (codepoint & 0x3f));
-                    }
-                    break;
-                }
-                default: goto malformed;
+    for (;;) {
+        if (c->p >= c->end) {
+            jfail(c, "%s: invalid safetensors header", c->path);
+            free(buf);
+            return NULL;
+        }
+        unsigned char b = (unsigned char)*c->p++;
+        if (b == '"') {
+            break;
+        }
+        if (n + 4 >= cap) {
+            cap *= 2;
+            char *nb = realloc(buf, cap);
+            if (nb == NULL) {
+                jfail(c, "%s: out of memory", c->path);
+                free(buf);
+                return NULL;
             }
-        } else {
-            if (value < 0x20) goto malformed;
-            result[length++] = (char)value;
+            buf = nb;
+        }
+        if (b < 0x20) { /* control chars rejected */
+            jfail(c, "%s: invalid safetensors header", c->path);
+            free(buf);
+            return NULL;
+        }
+        if (b != '\\') {
+            buf[n++] = (char)b;
+            continue;
+        }
+        if (c->p >= c->end) {
+            jfail(c, "%s: invalid safetensors header", c->path);
+            free(buf);
+            return NULL;
+        }
+        char e = *c->p++;
+        switch (e) {
+        case '"': buf[n++] = '"'; break;
+        case '\\': buf[n++] = '\\'; break;
+        case '/': buf[n++] = '/'; break;
+        case 'b': buf[n++] = '\b'; break;
+        case 'f': buf[n++] = '\f'; break;
+        case 'n': buf[n++] = '\n'; break;
+        case 'r': buf[n++] = '\r'; break;
+        case 't': buf[n++] = '\t'; break;
+        case 'u': {
+            uint32_t cp;
+            if (!j_hex4(c, &cp)) {
+                free(buf);
+                return NULL;
+            }
+            utf8_append(buf, &n, cp);
+            break;
+        }
+        default:
+            jfail(c, "%s: invalid safetensors header", c->path);
+            free(buf);
+            return NULL;
         }
     }
-    if (cursor->at >= cursor->end) goto malformed;
-    cursor->at++;
-    result[length] = '\0';
-    return result;
+    buf[n] = '\0';
+    return buf;
+}
 
-malformed:
-    free(result);
-    h3i_json_fail(cursor, "malformed JSON string escape");
+/* Skip any JSON value. depth guards recursion. */
+static int j_skip(json_ctx *c, int depth)
+{
+    if (c->failed) {
+        return 0;
+    }
+    if (depth > 256) {
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
+    }
+    j_ws(c);
+    if (c->p >= c->end) {
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
+    }
+    char ch = *c->p;
+    if (ch == '{' || ch == '[') {
+        char close = (ch == '{') ? '}' : ']';
+        c->p++;
+        j_ws(c);
+        if (c->p < c->end && *c->p == close) {
+            c->p++;
+            return 1;
+        }
+        for (;;) {
+            if (ch == '{') {
+                char *key = j_string(c);
+                if (key == NULL) {
+                    return 0;
+                }
+                free(key);
+                j_ws(c);
+                if (c->p >= c->end || *c->p != ':') {
+                    jfail(c, "%s: invalid safetensors header", c->path);
+                    return 0;
+                }
+                c->p++;
+            }
+            if (!j_skip(c, depth + 1)) {
+                return 0;
+            }
+            j_ws(c);
+            if (c->p >= c->end) {
+                jfail(c, "%s: invalid safetensors header", c->path);
+                return 0;
+            }
+            if (*c->p == ',') {
+                c->p++;
+                j_ws(c);
+                continue;
+            }
+            if (*c->p == close) {
+                c->p++;
+                return 1;
+            }
+            jfail(c, "%s: invalid safetensors header", c->path);
+            return 0;
+        }
+    }
+    if (ch == '"') {
+        char *s = j_string(c);
+        if (s == NULL) {
+            return 0;
+        }
+        free(s);
+        return 1;
+    }
+    /* scalar: any run up to , } ] or whitespace, not validated */
+    const char *start = c->p;
+    while (c->p < c->end && *c->p != ',' && *c->p != '}' && *c->p != ']' &&
+           *c->p != ' ' && *c->p != '\n' && *c->p != '\r' && *c->p != '\t') {
+        c->p++;
+    }
+    if (c->p == start) {
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
+    }
+    return 1;
+}
+
+/* Unsigned decimal integer, digits only, overflow rejected. */
+static int j_uint(json_ctx *c, uint64_t *out)
+{
+    j_ws(c);
+    const char *start = c->p;
+    uint64_t v = 0;
+    while (c->p < c->end && *c->p >= '0' && *c->p <= '9') {
+        uint64_t d = (uint64_t)(*c->p - '0');
+        if (v > (UINT64_MAX - d) / 10) {
+            jfail(c, "%s: invalid safetensors header", c->path);
+            return 0;
+        }
+        v = v * 10 + d;
+        c->p++;
+    }
+    if (c->p == start) {
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* dtype table (SPEC §3)                                               */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    const char *name;
+    int size;
+    int internal; /* ggml id, -1 = indexed but unsupported */
+} st_dtype;
+
+static const st_dtype st_dtypes[] = {
+    {"BOOL", 1, -1}, {"I8", 1, -1}, {"U8", 1, -1},
+    {"I16", 2, -1}, {"U16", 2, -1}, {"F16", 2, H3I_TYPE_F16},
+    {"BF16", 2, H3I_TYPE_BF16},
+    {"I32", 4, -1}, {"U32", 4, -1}, {"F32", 4, H3I_TYPE_F32},
+    {"I64", 8, -1}, {"U64", 8, -1}, {"F64", 8, -1},
+};
+
+static const st_dtype *find_dtype(const char *name)
+{
+    for (size_t i = 0; i < sizeof st_dtypes / sizeof st_dtypes[0]; i++) {
+        if (strcmp(st_dtypes[i].name, name) == 0) {
+            return &st_dtypes[i];
+        }
+    }
     return NULL;
 }
 
-static int h3i_json_uint(h3i_json_cursor *cursor, uint64_t *result) {
-    h3i_json_ws(cursor);
-    if (cursor->at >= cursor->end || *cursor->at < '0' || *cursor->at > '9') {
-        return h3i_json_fail(cursor, "expected unsigned JSON integer");
+/* ------------------------------------------------------------------ */
+/* Header parsing                                                      */
+/* ------------------------------------------------------------------ */
+
+static void free_tensors(h3i_safetensors *st)
+{
+    for (size_t i = 0; i < st->count; i++) {
+        free(st->tensors[i].name);
     }
-    uint64_t value = 0;
-    while (cursor->at < cursor->end && *cursor->at >= '0' && *cursor->at <= '9') {
-        unsigned digit = (unsigned)(*cursor->at - '0');
-        if (value > (UINT64_MAX - digit) / 10) {
-            return h3i_json_fail(cursor, "integer overflow in safetensors header");
-        }
-        value = value * 10 + digit;
-        cursor->at++;
-    }
-    *result = value;
-    return 1;
+    free(st->tensors);
+    st->tensors = NULL;
+    st->count = 0;
 }
 
-static int h3i_json_skip(h3i_json_cursor *cursor);
+/* Parse one tensor descriptor object (after the name and ':'). */
+static int parse_tensor(json_ctx *c, h3i_st_tensor *t, uint64_t data_start,
+                        uint64_t data_size)
+{
+    j_ws(c);
+    if (c->p >= c->end || *c->p != '{') {
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
+    }
+    c->p++;
 
-static int h3i_json_skip_compound(h3i_json_cursor *cursor, char open, char close) {
-    if (!h3i_json_take(cursor, open)) return 0;
-    h3i_json_ws(cursor);
-    if (cursor->at < cursor->end && *cursor->at == close) {
-        cursor->at++;
-        return 1;
+    int have_dtype = 0, have_shape = 0, have_offsets = 0;
+    const st_dtype *dtype = NULL;
+    uint64_t begin = 0, end = 0;
+    t->ndim = 0;
+
+    j_ws(c);
+    if (c->p < c->end && *c->p == '}') {
+        c->p++;
+        jfail(c, "incomplete tensor descriptor");
+        return 0;
     }
     for (;;) {
-        if (open == '{') {
-            char *key = h3i_json_string(cursor);
-            if (!key) return 0;
-            free(key);
-            if (!h3i_json_take(cursor, ':')) return 0;
-        }
-        if (!h3i_json_skip(cursor)) return 0;
-        h3i_json_ws(cursor);
-        if (cursor->at >= cursor->end) return h3i_json_fail(cursor, "unterminated JSON value");
-        if (*cursor->at == close) {
-            cursor->at++;
-            return 1;
-        }
-        if (*cursor->at++ != ',') return h3i_json_fail(cursor, "expected JSON comma");
-    }
-}
-
-static int h3i_json_skip(h3i_json_cursor *cursor) {
-    h3i_json_ws(cursor);
-    if (cursor->at >= cursor->end) return h3i_json_fail(cursor, "missing JSON value");
-    if (*cursor->at == '"') {
-        char *value = h3i_json_string(cursor);
-        if (!value) return 0;
-        free(value);
-        return 1;
-    }
-    if (*cursor->at == '{') return h3i_json_skip_compound(cursor, '{', '}');
-    if (*cursor->at == '[') return h3i_json_skip_compound(cursor, '[', ']');
-    const char *start = cursor->at;
-    while (cursor->at < cursor->end && *cursor->at != ',' &&
-           *cursor->at != '}' && *cursor->at != ']' &&
-           *cursor->at != ' ' && *cursor->at != '\n' &&
-           *cursor->at != '\r' && *cursor->at != '\t') cursor->at++;
-    if (cursor->at == start) return h3i_json_fail(cursor, "invalid JSON scalar");
-    return 1;
-}
-
-static h3i_dtype h3i_parse_dtype(const char *name) {
-    if (!strcmp(name, "BOOL")) return H3I_DTYPE_BOOL;
-    if (!strcmp(name, "I8")) return H3I_DTYPE_I8;
-    if (!strcmp(name, "U8")) return H3I_DTYPE_U8;
-    if (!strcmp(name, "I16")) return H3I_DTYPE_I16;
-    if (!strcmp(name, "U16")) return H3I_DTYPE_U16;
-    if (!strcmp(name, "F16")) return H3I_DTYPE_F16;
-    if (!strcmp(name, "BF16")) return H3I_DTYPE_BF16;
-    if (!strcmp(name, "I32")) return H3I_DTYPE_I32;
-    if (!strcmp(name, "U32")) return H3I_DTYPE_U32;
-    if (!strcmp(name, "F32")) return H3I_DTYPE_F32;
-    if (!strcmp(name, "I64")) return H3I_DTYPE_I64;
-    if (!strcmp(name, "U64")) return H3I_DTYPE_U64;
-    if (!strcmp(name, "F64")) return H3I_DTYPE_F64;
-    return H3I_DTYPE_UNKNOWN;
-}
-
-size_t h3i_dtype_size(h3i_dtype dtype) {
-    switch (dtype) {
-        case H3I_DTYPE_BOOL:
-        case H3I_DTYPE_I8:
-        case H3I_DTYPE_U8: return 1;
-        case H3I_DTYPE_I16:
-        case H3I_DTYPE_U16:
-        case H3I_DTYPE_F16:
-        case H3I_DTYPE_BF16: return 2;
-        case H3I_DTYPE_I32:
-        case H3I_DTYPE_U32:
-        case H3I_DTYPE_F32: return 4;
-        case H3I_DTYPE_I64:
-        case H3I_DTYPE_U64:
-        case H3I_DTYPE_F64: return 8;
-        case H3I_DTYPE_UNKNOWN: return 0;
-    }
-    return 0;
-}
-
-const char *h3i_dtype_name(h3i_dtype dtype) {
-    switch (dtype) {
-        case H3I_DTYPE_BOOL: return "BOOL";
-        case H3I_DTYPE_I8: return "I8";
-        case H3I_DTYPE_U8: return "U8";
-        case H3I_DTYPE_I16: return "I16";
-        case H3I_DTYPE_U16: return "U16";
-        case H3I_DTYPE_F16: return "F16";
-        case H3I_DTYPE_BF16: return "BF16";
-        case H3I_DTYPE_I32: return "I32";
-        case H3I_DTYPE_U32: return "U32";
-        case H3I_DTYPE_F32: return "F32";
-        case H3I_DTYPE_I64: return "I64";
-        case H3I_DTYPE_U64: return "U64";
-        case H3I_DTYPE_F64: return "F64";
-        case H3I_DTYPE_UNKNOWN: return "UNKNOWN";
-    }
-    return "UNKNOWN";
-}
-
-static int h3i_parse_shape(h3i_json_cursor *cursor, h3i_st_tensor *tensor) {
-    if (!h3i_json_take(cursor, '[')) return 0;
-    h3i_json_ws(cursor);
-    if (cursor->at < cursor->end && *cursor->at == ']') {
-        cursor->at++;
-        tensor->ndim = 0;
-        return 1;
-    }
-    int dimensions = 0;
-    for (;;) {
-        uint64_t value;
-        if (dimensions >= 8) return h3i_json_fail(cursor, "tensor rank exceeds 8");
-        if (!h3i_json_uint(cursor, &value)) return 0;
-        tensor->shape[dimensions++] = value;
-        h3i_json_ws(cursor);
-        if (cursor->at >= cursor->end) return h3i_json_fail(cursor, "unterminated shape");
-        if (*cursor->at == ']') {
-            cursor->at++;
-            tensor->ndim = dimensions;
-            return 1;
-        }
-        if (*cursor->at++ != ',') return h3i_json_fail(cursor, "expected shape comma");
-    }
-}
-
-static int h3i_parse_offsets(h3i_json_cursor *cursor, h3i_st_tensor *tensor) {
-    if (!h3i_json_take(cursor, '[') ||
-        !h3i_json_uint(cursor, &tensor->data_begin) ||
-        !h3i_json_take(cursor, ',') ||
-        !h3i_json_uint(cursor, &tensor->data_end) ||
-        !h3i_json_take(cursor, ']')) return 0;
-    return 1;
-}
-
-static int h3i_parse_tensor(h3i_json_cursor *cursor, h3i_st_tensor *tensor) {
-    if (!h3i_json_take(cursor, '{')) return 0;
-    int have_dtype = 0;
-    int have_shape = 0;
-    int have_offsets = 0;
-    for (;;) {
-        h3i_json_ws(cursor);
-        if (cursor->at < cursor->end && *cursor->at == '}') {
-            cursor->at++;
-            break;
-        }
-        char *key = h3i_json_string(cursor);
-        if (!key || !h3i_json_take(cursor, ':')) {
-            free(key);
+        char *key = j_string(c);
+        if (key == NULL) {
             return 0;
         }
-        int ok = 1;
-        if (!strcmp(key, "dtype")) {
-            char *value = h3i_json_string(cursor);
-            if (!value) ok = 0;
-            else {
-                tensor->dtype = h3i_parse_dtype(value);
-                have_dtype = tensor->dtype != H3I_DTYPE_UNKNOWN;
+        j_ws(c);
+        if (c->p >= c->end || *c->p != ':') {
+            free(key);
+            jfail(c, "%s: invalid safetensors header", c->path);
+            return 0;
+        }
+        c->p++;
+        if (strcmp(key, "dtype") == 0) {
+            char *s = j_string(c);
+            if (s == NULL) {
+                free(key);
+                return 0;
             }
-            free(value);
-        } else if (!strcmp(key, "shape")) {
-            ok = h3i_parse_shape(cursor, tensor);
-            have_shape = ok;
-        } else if (!strcmp(key, "data_offsets")) {
-            ok = h3i_parse_offsets(cursor, tensor);
-            have_offsets = ok;
+            dtype = find_dtype(s); /* unknown string ⇒ missing dtype */
+            have_dtype = (dtype != NULL);
+            free(s);
+        } else if (strcmp(key, "shape") == 0) {
+            j_ws(c);
+            if (c->p >= c->end || *c->p != '[') {
+                free(key);
+                jfail(c, "%s: invalid safetensors header", c->path);
+                return 0;
+            }
+            c->p++;
+            t->ndim = 0;
+            j_ws(c);
+            if (c->p < c->end && *c->p == ']') {
+                c->p++;
+            } else {
+                for (;;) {
+                    uint64_t d;
+                    if (!j_uint(c, &d)) {
+                        free(key);
+                        return 0;
+                    }
+                    if (t->ndim >= 8) {
+                        free(key);
+                        jfail(c, "tensor rank exceeds 8");
+                        return 0;
+                    }
+                    t->shape[t->ndim++] = d;
+                    j_ws(c);
+                    if (c->p >= c->end) {
+                        free(key);
+                        jfail(c, "%s: invalid safetensors header", c->path);
+                        return 0;
+                    }
+                    if (*c->p == ',') {
+                        c->p++;
+                        continue;
+                    }
+                    if (*c->p == ']') {
+                        c->p++;
+                        break;
+                    }
+                    free(key);
+                    jfail(c, "%s: invalid safetensors header", c->path);
+                    return 0;
+                }
+            }
+            have_shape = 1;
+        } else if (strcmp(key, "data_offsets") == 0) {
+            j_ws(c);
+            if (c->p >= c->end || *c->p != '[') {
+                free(key);
+                jfail(c, "%s: invalid safetensors header", c->path);
+                return 0;
+            }
+            c->p++;
+            if (!j_uint(c, &begin)) {
+                free(key);
+                return 0;
+            }
+            j_ws(c);
+            if (c->p >= c->end || *c->p != ',') {
+                free(key);
+                jfail(c, "%s: invalid safetensors header", c->path);
+                return 0;
+            }
+            c->p++;
+            if (!j_uint(c, &end)) {
+                free(key);
+                return 0;
+            }
+            j_ws(c);
+            if (c->p >= c->end || *c->p != ']') {
+                free(key);
+                jfail(c, "%s: invalid safetensors header", c->path);
+                return 0;
+            }
+            c->p++;
+            have_offsets = 1;
         } else {
-            ok = h3i_json_skip(cursor);
+            if (!j_skip(c, 0)) {
+                free(key);
+                return 0;
+            }
         }
         free(key);
-        if (!ok) return 0;
-        h3i_json_ws(cursor);
-        if (cursor->at >= cursor->end) return h3i_json_fail(cursor, "unterminated tensor entry");
-        if (*cursor->at == '}') continue;
-        if (*cursor->at++ != ',') return h3i_json_fail(cursor, "expected tensor comma");
-    }
-    if (!have_dtype || !have_shape || !have_offsets) {
-        return h3i_json_fail(cursor, "incomplete tensor descriptor");
-    }
-    return 1;
-}
-
-static int h3i_validate_tensor(h3i_json_cursor *cursor, h3i_st_tensor *tensor,
-                              uint64_t data_start, uint64_t file_size) {
-    if (tensor->data_end < tensor->data_begin ||
-        tensor->data_end > file_size - data_start) {
-        return h3i_json_fail(cursor, "tensor data offsets exceed file");
-    }
-    uint64_t elements = 1;
-    for (int dimension = 0; dimension < tensor->ndim; dimension++) {
-        if (tensor->shape[dimension] && elements > UINT64_MAX / tensor->shape[dimension]) {
-            return h3i_json_fail(cursor, "tensor element count overflow");
+        j_ws(c);
+        if (c->p >= c->end) {
+            jfail(c, "%s: invalid safetensors header", c->path);
+            return 0;
         }
-        elements *= tensor->shape[dimension];
-    }
-    size_t item_size = h3i_dtype_size(tensor->dtype);
-    if (item_size && elements > UINT64_MAX / item_size) {
-        return h3i_json_fail(cursor, "tensor byte count overflow");
-    }
-    uint64_t expected = elements * item_size;
-    if (expected != tensor->data_end - tensor->data_begin) {
-        return h3i_json_fail(cursor, "tensor shape does not match byte offsets");
-    }
-    tensor->file_offset = data_start + tensor->data_begin;
-    return 1;
-}
-
-static int h3i_append_tensor(h3i_st_header *header, h3i_st_tensor tensor,
-                            size_t *capacity, h3i_json_cursor *cursor) {
-    if (header->tensor_count == *capacity) {
-        size_t next = *capacity ? *capacity * 2 : 64;
-        h3i_st_tensor *values = realloc(header->tensors, next * sizeof(*values));
-        if (!values) return h3i_json_fail(cursor, "out of memory indexing tensors");
-        header->tensors = values;
-        *capacity = next;
-    }
-    header->tensors[header->tensor_count++] = tensor;
-    return 1;
-}
-
-static uint64_t h3i_u64_le(const unsigned char bytes[8]) {
-    uint64_t value = 0;
-    for (unsigned index = 0; index < 8; index++) {
-        value |= (uint64_t)bytes[index] << (index * 8);
-    }
-    return value;
-}
-
-int h3i_st_read_header(const char *path, h3i_st_header *header,
-                      char *error, size_t error_size) {
-    if (!path || !header) return 0;
-    memset(header, 0, sizeof(*header));
-    if (error && error_size) error[0] = '\0';
-    int descriptor = open(path, O_RDONLY);
-    if (descriptor < 0) {
-        if (error && error_size) snprintf(error, error_size, "%s: %s", path, strerror(errno));
-        return 0;
-    }
-    struct stat status;
-    unsigned char prefix[8];
-    if (fstat(descriptor, &status) != 0 || status.st_size < 8 ||
-        pread(descriptor, prefix, sizeof(prefix), 0) != (ssize_t)sizeof(prefix)) {
-        if (error && error_size) snprintf(error, error_size, "%s: invalid file", path);
-        close(descriptor);
-        return 0;
-    }
-    uint64_t file_size = (uint64_t)status.st_size;
-    uint64_t header_size = h3i_u64_le(prefix);
-    if (header_size > H3I_ST_MAX_HEADER || header_size > file_size - 8) {
-        if (error && error_size) snprintf(error, error_size, "%s: invalid header size", path);
-        close(descriptor);
-        return 0;
-    }
-    char *json = malloc((size_t)header_size + 1);
-    if (!json || pread(descriptor, json, (size_t)header_size, 8) != (ssize_t)header_size) {
-        if (error && error_size) snprintf(error, error_size, "%s: cannot read header", path);
-        free(json);
-        close(descriptor);
-        return 0;
-    }
-    close(descriptor);
-    json[header_size] = '\0';
-    header->path = strdup(path);
-    header->file_size = file_size;
-    header->header_size = header_size;
-    if (!header->path) {
-        free(json);
-        if (error && error_size) snprintf(error, error_size, "out of memory");
-        return 0;
-    }
-    h3i_json_cursor cursor = {json, json + header_size, error, error_size};
-    size_t capacity = 0;
-    if (!h3i_json_take(&cursor, '{')) goto fail;
-    h3i_json_ws(&cursor);
-    if (cursor.at < cursor.end && *cursor.at == '}') cursor.at++;
-    else for (;;) {
-        char *name = h3i_json_string(&cursor);
-        if (!name || !h3i_json_take(&cursor, ':')) {
-            free(name);
-            goto fail;
+        if (*c->p == ',') {
+            c->p++;
+            j_ws(c);
+            continue;
         }
-        if (!strcmp(name, "__metadata__")) {
-            free(name);
-            if (!h3i_json_skip(&cursor)) goto fail;
-        } else {
-            h3i_st_tensor tensor;
-            memset(&tensor, 0, sizeof(tensor));
-            tensor.name = name;
-            if (!h3i_parse_tensor(&cursor, &tensor) ||
-                !h3i_validate_tensor(&cursor, &tensor, 8 + header_size, file_size) ||
-                !h3i_append_tensor(header, tensor, &capacity, &cursor)) {
-                free(tensor.name);
-                goto fail;
-            }
-        }
-        h3i_json_ws(&cursor);
-        if (cursor.at >= cursor.end) {
-            h3i_json_fail(&cursor, "unterminated safetensors object");
-            goto fail;
-        }
-        if (*cursor.at == '}') {
-            cursor.at++;
+        if (*c->p == '}') {
+            c->p++;
             break;
         }
-        if (*cursor.at++ != ',') {
-            h3i_json_fail(&cursor, "expected top-level comma");
-            goto fail;
-        }
+        jfail(c, "%s: invalid safetensors header", c->path);
+        return 0;
     }
-    h3i_json_ws(&cursor);
-    if (cursor.at != cursor.end) {
-        h3i_json_fail(&cursor, "trailing data in safetensors header");
-        goto fail;
+
+    if (!have_dtype || !have_shape || !have_offsets) {
+        jfail(c, "incomplete tensor descriptor");
+        return 0;
     }
-    free(json);
-    return 1;
-
-fail:
-    free(json);
-    h3i_st_free_header(header);
-    return 0;
-}
-
-void h3i_st_free_header(h3i_st_header *header) {
-    if (!header) return;
-    for (size_t index = 0; index < header->tensor_count; index++) {
-        free(header->tensors[index].name);
+    if (end < begin || end > data_size) {
+        jfail(c, "tensor data offsets exceed file");
+        return 0;
     }
-    free(header->tensors);
-    free(header->path);
-    memset(header, 0, sizeof(*header));
-}
-
-const h3i_st_tensor *h3i_st_find(const h3i_st_header *header, const char *name) {
-    if (!header || !name) return NULL;
-    for (size_t index = 0; index < header->tensor_count; index++) {
-        if (!strcmp(header->tensors[index].name, name)) return &header->tensors[index];
-    }
-    return NULL;
-}
-
-uint64_t h3i_st_tensor_elements(const h3i_st_tensor *tensor) {
-    if (!tensor) return 0;
     uint64_t elements = 1;
-    for (int dimension = 0; dimension < tensor->ndim; dimension++) {
-        if (tensor->shape[dimension] != 0 &&
-            elements > UINT64_MAX / tensor->shape[dimension]) return 0;
-        elements *= tensor->shape[dimension];
+    for (int i = 0; i < t->ndim; i++) {
+        if (t->shape[i] != 0 && elements > UINT64_MAX / t->shape[i]) {
+            jfail(c, "%s: tensor is too large", c->path);
+            return 0;
+        }
+        elements *= t->shape[i];
     }
-    return elements;
+    if (elements > UINT64_MAX / (uint64_t)dtype->size) {
+        jfail(c, "%s: tensor is too large", c->path);
+        return 0;
+    }
+    uint64_t bytes = (uint64_t)dtype->size * elements;
+    if (bytes != end - begin) {
+        jfail(c, "tensor shape does not match byte offsets");
+        return 0;
+    }
+    t->type = dtype->internal;
+    t->supported = (dtype->internal >= 0);
+    t->elements = elements;
+    t->bytes = bytes;
+    t->offset = data_start + begin;
+    return 1;
 }
 
-int h3i_st_read_data(const h3i_st_header *header, const h3i_st_tensor *tensor,
-                    void *data, size_t bytes, char *error, size_t error_size) {
-    if (error && error_size) error[0] = '\0';
-    if (!header || !header->path || !tensor || (!data && bytes != 0)) {
-        if (error && error_size) snprintf(error, error_size, "invalid tensor read request");
+int h3i_safetensors_open(const char *path, h3i_safetensors *out,
+                         char *error, size_t error_size)
+{
+    memset(out, 0, sizeof *out);
+    out->path = strdup(path);
+    if (out->path == NULL) {
+        h3i_fail(error, error_size, "%s: out of memory", path);
         return 0;
     }
-    uint64_t tensor_bytes = tensor->data_end - tensor->data_begin;
-    if (tensor_bytes != bytes) {
-        if (error && error_size) {
-            snprintf(error, error_size, "%s: expected %llu bytes, got %zu",
-                     tensor->name ? tensor->name : "tensor",
-                     (unsigned long long)tensor_bytes, bytes);
+
+    struct stat st;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        h3i_fail(error, error_size, "%s: invalid file", path);
+        if (fd >= 0) {
+            close(fd);
         }
+        free(out->path);
+        out->path = NULL;
         return 0;
     }
-    int descriptor = open(header->path, O_RDONLY);
-    if (descriptor < 0) {
-        if (error && error_size) {
-            snprintf(error, error_size, "%s: %s", header->path, strerror(errno));
-        }
+    out->file_size = (uint64_t)st.st_size;
+    if (out->file_size < 8) {
+        h3i_fail(error, error_size, "%s: invalid file", path);
+        close(fd);
+        free(out->path);
+        out->path = NULL;
         return 0;
     }
-    size_t done = 0;
-    while (done < bytes) {
-        size_t remaining = bytes - done;
-        size_t chunk = remaining < (size_t)(1u << 30) ? remaining :
-                                                            (size_t)(1u << 30);
-        ssize_t count = pread(descriptor, (unsigned char *)data + done, chunk,
-                              (off_t)(tensor->file_offset + done));
-        if (count <= 0) {
-            if (error && error_size) {
-                snprintf(error, error_size, "%s: cannot read %s: %s", header->path,
-                         tensor->name ? tensor->name : "tensor",
-                         count < 0 ? strerror(errno) : "unexpected end of file");
+
+    uint8_t hdr[8];
+    ssize_t n = pread(fd, hdr, 8, 0);
+    if (n != 8) {
+        h3i_fail(error, error_size, "%s: invalid file", path);
+        close(fd);
+        free(out->path);
+        out->path = NULL;
+        return 0;
+    }
+    uint64_t hsize = (uint64_t)hdr[0] | ((uint64_t)hdr[1] << 8) |
+                     ((uint64_t)hdr[2] << 16) | ((uint64_t)hdr[3] << 24) |
+                     ((uint64_t)hdr[4] << 32) | ((uint64_t)hdr[5] << 40) |
+                     ((uint64_t)hdr[6] << 48) | ((uint64_t)hdr[7] << 56);
+    if (hsize > 268435456u || hsize > out->file_size - 8) {
+        h3i_fail(error, error_size, "%s: invalid header size", path);
+        close(fd);
+        free(out->path);
+        out->path = NULL;
+        return 0;
+    }
+
+    char *buf = malloc((size_t)hsize + 1);
+    if (buf == NULL) {
+        h3i_fail(error, error_size, "%s: out of memory", path);
+        close(fd);
+        free(out->path);
+        out->path = NULL;
+        return 0;
+    }
+    uint64_t got = 0;
+    while (got < hsize) {
+        n = pread(fd, buf + got, (size_t)(hsize - got), (off_t)(8 + got));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
             }
-            close(descriptor);
-            return 0;
+            break;
         }
-        done += (size_t)count;
+        if (n == 0) {
+            break;
+        }
+        got += (uint64_t)n;
     }
-    close(descriptor);
+    close(fd);
+    if (got != hsize) {
+        h3i_fail(error, error_size, "%s: invalid file", path);
+        free(buf);
+        free(out->path);
+        out->path = NULL;
+        return 0;
+    }
+    buf[hsize] = '\0';
+
+    json_ctx c = {buf, buf + hsize, path, error, error_size, 0};
+    uint64_t data_start = 8 + hsize;
+    uint64_t data_size = out->file_size - data_start;
+
+    j_ws(&c);
+    if (c.p >= c.end || *c.p != '{') {
+        jfail(&c, "%s: invalid safetensors header", path);
+    } else {
+        c.p++;
+        j_ws(&c);
+        if (c.p < c.end && *c.p == '}') {
+            c.p++; /* empty object: 0 tensors, valid */
+        } else {
+            for (;;) {
+                char *key = j_string(&c);
+                if (key == NULL) {
+                    break;
+                }
+                j_ws(&c);
+                if (c.p >= c.end || *c.p != ':') {
+                    free(key);
+                    jfail(&c, "%s: invalid safetensors header", path);
+                    break;
+                }
+                c.p++;
+                if (strcmp(key, "__metadata__") == 0) {
+                    free(key);
+                    if (!j_skip(&c, 0)) {
+                        break;
+                    }
+                } else {
+                    h3i_st_tensor *nt = realloc(out->tensors,
+                                                (out->count + 1) * sizeof *nt);
+                    if (nt == NULL) {
+                        free(key);
+                        jfail(&c, "%s: out of memory", path);
+                        break;
+                    }
+                    out->tensors = nt;
+                    h3i_st_tensor *t = &out->tensors[out->count];
+                    memset(t, 0, sizeof *t);
+                    t->name = key; /* ownership moves */
+                    if (!parse_tensor(&c, t, data_start, data_size)) {
+                        break;
+                    }
+                    out->count++;
+                }
+                j_ws(&c);
+                if (c.p >= c.end) {
+                    jfail(&c, "%s: invalid safetensors header", path);
+                    break;
+                }
+                if (*c.p == ',') {
+                    c.p++;
+                    j_ws(&c);
+                    continue;
+                }
+                if (*c.p == '}') {
+                    c.p++;
+                    break;
+                }
+                jfail(&c, "%s: invalid safetensors header", path);
+                break;
+            }
+        }
+    }
+
+    if (!c.failed) {
+        /* after the object only whitespace is allowed */
+        while (c.p < c.end &&
+               (*c.p == ' ' || *c.p == '\n' || *c.p == '\r' || *c.p == '\t')) {
+            c.p++;
+        }
+        if (c.p != c.end) {
+            jfail(&c, "trailing data in safetensors header");
+        }
+    }
+
+    free(buf);
+    if (c.failed) {
+        free_tensors(out);
+        free(out->path);
+        out->path = NULL;
+        return 0;
+    }
     return 1;
 }
 
-static int h3i_has_suffix(const char *value, const char *suffix) {
-    size_t length = strlen(value);
-    size_t suffix_length = strlen(suffix);
-    return length >= suffix_length && !strcmp(value + length - suffix_length, suffix);
-}
-
-int h3i_st_inventory_dir(const char *directory, h3i_component_info *info,
-                        char *error, size_t error_size) {
-    if (!directory || !info) return 0;
-    memset(info, 0, sizeof(*info));
-    DIR *stream = opendir(directory);
-    if (!stream) {
-        if (error && error_size) snprintf(error, error_size, "%s: %s", directory, strerror(errno));
-        return 0;
+void h3i_safetensors_close(h3i_safetensors *st)
+{
+    if (st == NULL) {
+        return;
     }
-    struct dirent *entry;
-    while ((entry = readdir(stream)) != NULL) {
-        if (entry->d_name[0] == '.' || !h3i_has_suffix(entry->d_name, ".safetensors")) continue;
-        size_t length = strlen(directory) + strlen(entry->d_name) + 2;
-        char *path = malloc(length);
-        if (!path) {
-            if (error && error_size) snprintf(error, error_size, "out of memory");
-            closedir(stream);
-            return 0;
-        }
-        snprintf(path, length, "%s/%s", directory, entry->d_name);
-        h3i_st_header header;
-        int ok = h3i_st_read_header(path, &header, error, error_size);
-        free(path);
-        if (!ok) {
-            closedir(stream);
-            return 0;
-        }
-        info->files++;
-        info->bytes += header.file_size;
-        info->tensors += header.tensor_count;
-        for (size_t index = 0; index < header.tensor_count; index++) {
-            info->tensor_bytes += header.tensors[index].data_end -
-                                  header.tensors[index].data_begin;
-        }
-        h3i_st_free_header(&header);
-    }
-    closedir(stream);
-    if (!info->files) {
-        if (error && error_size) snprintf(error, error_size, "%s: no safetensors files", directory);
-        return 0;
-    }
-    return 1;
+    free_tensors(st);
+    free(st->path);
+    st->path = NULL;
 }

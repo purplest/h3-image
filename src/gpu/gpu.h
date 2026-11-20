@@ -1,3 +1,7 @@
+/* Derived from h3.c commit 8974cc0 (MIT, Salvatore Sanfilippo):
+ * prefixes renamed h3_/H3_ -> h3i_/H3I_ and extended with the
+ * h3-image additions (GGUF dequant convert, NE handoff). See SPEC.md
+ * provenance. Do not hand-edit the derived portion; port from h3.c. */
 #ifndef H3I_GPU_H
 #define H3I_GPU_H
 
@@ -93,9 +97,6 @@ int h3i_gpu_continue(h3i_gpu *gpu);
 int h3i_gpu_submit(h3i_gpu *gpu);
 const char *h3i_gpu_error(const h3i_gpu *gpu);
 int h3i_gpu_get_stats(const h3i_gpu *gpu, h3i_gpu_stats *stats);
-/* Metal budget bytes (recommendedMaxWorkingSetSize). SPEC part 6 §3.5;
- * used by the DiT --weights auto threshold and --info. */
-uint64_t h3i_gpu_recommended_working_set(const h3i_gpu *gpu);
 /* Optional benchmark labels. With H3I_PROFILE set, marks and context teardown
  * print wall time alongside command-buffer GPU time and allocation counters. */
 void h3i_gpu_profile_set_label(h3i_gpu *gpu, const char *label);
@@ -433,7 +434,7 @@ int h3i_gpu_gate_adaln_quantize_int8(
                      uint32_t padded_rows, uint32_t width, uint32_t slots,
                      uint32_t gate_slot, uint32_t shift_slot,
                      uint32_t scale_slot, float epsilon);
-int h3i_gpu_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
+int h3i_gpu_qkv_rope_bf16_h3c(h3i_gpu *gpu, h3i_gpu_tensor *query,
                          h3i_gpu_tensor *key, h3i_gpu_tensor *value,
                          const h3i_gpu_tensor *qkv,
                          const h3i_gpu_tensor *q_norm,
@@ -444,7 +445,7 @@ int h3i_gpu_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
                          uint32_t rope_half, float epsilon);
 /* H3 checkpoint QKV rows are [head, q/k/v, dimension], unlike the
  * conventional [q/k/v, head, dimension] layout accepted above. */
-int h3i_gpu_grouped_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
+int h3i_gpu_grouped_qkv_rope_bf16_h3c(h3i_gpu *gpu, h3i_gpu_tensor *query,
                                  h3i_gpu_tensor *key, h3i_gpu_tensor *value,
                                  const h3i_gpu_tensor *qkv,
                                  const h3i_gpu_tensor *q_norm,
@@ -533,7 +534,7 @@ int h3i_gpu_rope_text_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
                           const h3i_gpu_tensor *rope_sin_f32,
                           uint32_t sequence, uint32_t query_heads,
                           uint32_t kv_heads, uint32_t head_dim);
-int h3i_gpu_gqa_causal_bf16(h3i_gpu *gpu, h3i_gpu_tensor *output,
+int h3i_gpu_gqa_causal_bf16_h3c(h3i_gpu *gpu, h3i_gpu_tensor *output,
                            const h3i_gpu_tensor *query,
                            const h3i_gpu_tensor *key,
                            const h3i_gpu_tensor *value,
@@ -613,4 +614,58 @@ int h3i_gpu_silu_mul_bf16(h3i_gpu *gpu, h3i_gpu_tensor *output,
                          const h3i_gpu_tensor *gate,
                          const h3i_gpu_tensor *up, uint32_t elements);
 
-#endif
+/* ---- h3-image additions (not in h3.c) ---- */
+
+typedef struct {
+    char name[128];
+    char architecture[64];
+    int apple_gpu_family;
+    int metal4;
+    uint64_t unified_memory;
+    uint64_t recommended_working_set;
+    uint64_t max_buffer_length;
+} h3i_gpu_info;
+
+int h3i_gpu_get_info(h3i_gpu *gpu, h3i_gpu_info *out);
+uint64_t h3i_gpu_recommended_working_set(h3i_gpu *gpu);
+void *h3i_gpu_tensor_contents(h3i_gpu_tensor *tensor);
+h3i_gpu_tensor *h3i_gpu_tensor_new_u32(h3i_gpu *gpu, size_t elements);
+
+/* GGML dequantization: raw I8 -> BF16/F32 (SPEC §5.3). */
+int h3i_gpu_convert_raw(h3i_gpu *gpu, h3i_gpu_tensor *out, size_t out_off,
+                        const h3i_gpu_tensor *raw, size_t raw_off, int type,
+                        size_t elements);
+
+/* Neural Engine handoff (SPEC §5.4); out is I8 storage holding FP16. */
+int h3i_gpu_bf16_to_f16(h3i_gpu *gpu, h3i_gpu_tensor *out,
+                        const h3i_gpu_tensor *in, size_t n, float scale);
+int h3i_gpu_f16_to_bf16_checked(h3i_gpu *gpu, h3i_gpu_tensor *out,
+                                const h3i_gpu_tensor *in, size_t n, float scale,
+                                h3i_gpu_tensor *flag, uint32_t bits);
+int h3i_gpu_transpose_bf16_f16(h3i_gpu *gpu, h3i_gpu_tensor *out,
+                               const h3i_gpu_tensor *in, size_t row_off,
+                               size_t rows, size_t cols, float scale);
+
+/* Spec-exact QKV RoPE (grouped flag) and chunked causal GQA; the reference
+ * MLX-matched variants are available as *_h3c. */
+int h3i_gpu_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *q, h3i_gpu_tensor *k,
+                          h3i_gpu_tensor *v, const h3i_gpu_tensor *qkv,
+                          const h3i_gpu_tensor *cosb, const h3i_gpu_tensor *sinb,
+                          const h3i_gpu_tensor *q_norm, const h3i_gpu_tensor *k_norm,
+                          size_t rows, size_t heads, size_t hd, size_t rope_half,
+                          float eps, int grouped);
+int h3i_gpu_grouped_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *q,
+                                  h3i_gpu_tensor *k, h3i_gpu_tensor *v,
+                                  const h3i_gpu_tensor *qkv,
+                                  const h3i_gpu_tensor *q_norm,
+                                  const h3i_gpu_tensor *k_norm,
+                                  const h3i_gpu_tensor *rope_cos,
+                                  const h3i_gpu_tensor *rope_sin,
+                                  size_t rows, size_t heads, size_t hd,
+                                  size_t rope_half, float eps);
+int h3i_gpu_gqa_causal_bf16(h3i_gpu *gpu, h3i_gpu_tensor *out,
+                            const h3i_gpu_tensor *q, const h3i_gpu_tensor *k,
+                            const h3i_gpu_tensor *v, size_t seq, size_t qheads,
+                            size_t kvheads, size_t hd, float scale);
+
+#endif /* H3I_GPU_H */

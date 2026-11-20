@@ -581,22 +581,21 @@ static int prepare_stream_source(h3i_dit *dit,
                                  const char *name, uint64_t rows,
                                  uint64_t columns, unsigned field,
                                  char *error, size_t error_size) {
-    const h3i_st_header *header = NULL;
-    const h3i_st_tensor *tensor = h3i_weight_find(dit->weights, name, &header);
+    const h3i_tensor_rec *tensor = h3i_weight_find(dit->weights, name);
     if (!tensor) {
         fail(error, error_size, "required streaming weight is absent: %s",
              name);
         return 0;
     }
-    if (!header || tensor->dtype != H3I_DTYPE_BF16 || tensor->ndim != 2 ||
+    if (tensor->type != H3I_TYPE_BF16 || tensor->ndim != 2 ||
         tensor->shape[0] != rows || tensor->shape[1] != columns ||
         rows > SIZE_MAX / columns) {
         fail(error, error_size, "streaming weight has the wrong schema: %s",
              name);
         return 0;
     }
-    source->path = header->path;
-    source->file_offset = tensor->file_offset;
+    source->path = tensor->path;
+    source->file_offset = tensor->offset;
     source->elements = (size_t)(rows * columns);
     source->field = field;
     return 1;

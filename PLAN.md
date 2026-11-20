@@ -25,7 +25,30 @@ SDPA rel L2 <0.02) and `tools/bench_gpu.c` (QKV/MLP/SDPA at 1 MP/4 MP; decode be
 Phase 2). Confirmed for Phase 7: donor GQA allocates seq×4 B threadgroup memory and **fails
 above ~8192 rows** — the spec's chunked online softmax (min(seq,4096)×4 B) must be added.
 Linux: syntax-clean incl. new test/tool; host smoke still 45/0. **Mac gate:** `make && make test`
-+ `./build/bench_gpu`.
++ `./build/bench_gpu`. ** CLOSED — user confirmed all pass on Mac (after two test-reference
+fixes: explicit conversion casts for Apple clang, and AdaLN single-rounding reference).**
+
+**Phase 2 progress (Linux side done, Mac gate pending):** discovered `main` is a previous run
+of this same rebuild (M2 weights-CPU and M3 layout already A1/A2-verified there). Adopted its
+spec-faithful modules instead of rewriting: `weights/{gguf,safetensors,source,model}.{c,h}`,
+`app/{paths.c,paths.h,clock.h,error.h}`, GPU additions (`gpu.h/gpu.m` convert_raw + get_info +
+tensor_contents + new_u32 + `*_h3c` wrappers; `kernels.metal` with all 18 convert kernels,
+NE handoff, **chunked-online-softmax GQA** and spec-exact QKV RoPE — Phase 7 kernel work
+arrives early), test infra (`check.h`, `builders.h`, `bf16_util.h`, `gpu_test.h`, `ggml_ref.c`
+oracle, `vectors.h`, `test_core/test_gguf/test_weights`, macos-stubs, lint tools).
+New code: `weights/stream.{c,h}` (SPEC §2.7 verbatim: two staging sets, read-ahead thread,
+ordering contract, double slots, quiesce), `tests/test_stream.c` (streamed==resident bit-exact,
+shuffled/cyclic passes, F32 conversion vs CPU, double-slot coexistence, spec error strings),
+`tools/inspect.c`, `h3i_source_load` (§4.4), `h3i_type_name`, donor weight-store API rewritten
+as a shim over the source (dit.c/text_encoder.c adapted, ~15 sites). Fixed an adopted bug:
+gpu.h additions sat **outside the include guard** (double-inclusion typedef redefinition).
+Makefile merged with main's machinery: global `-ffp-contract=off`, two-step test builds,
+ggml oracle compiled contraction-fast, `core-tests`/`objc-syntax`/`test-syntax`/`metal-lint`.
+**Linux gates:** core-tests **154 checks 0 failures** (test_core 12, test_gguf 54 incl. A1 CPU
+bit-exact vs ggml oracle all 9 types, test_weights 88), linux-check 0 warnings + smoke 45/0,
+test-syntax/objc-syntax/metal-lint clean, all 14 spec error strings verified present.
+**Mac gate:** `make && make check` (test_gpu_ops, test_gguf GPU==CPU + real-weight counts if
+weights present, test_weights, test_stream) + `make tools && ./build/inspect <weights>`.
 
 ---
 

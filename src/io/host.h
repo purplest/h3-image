@@ -3,6 +3,32 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+/* BF16 conventions (SPEC §4.0/§5.1): round-to-nearest-even, no NaN special
+ * case. Shared by the weights core, model code and tests. */
+static inline uint16_t h3i_bf16_bits(float x)
+{
+    uint32_t b;
+    memcpy(&b, &x, 4);
+    b += 0x7FFFu + ((b >> 16) & 1u);
+    return (uint16_t)(b >> 16);
+}
+
+/* BF16 (as u16) → F32: exact, just a shift. */
+static inline float h3i_bf16_to_f32(uint16_t h)
+{
+    uint32_t b = (uint32_t)h << 16;
+    float f;
+    memcpy(&f, &b, 4);
+    return f;
+}
+
+/* Round F32 to BF16 precision, returned as F32. */
+static inline float h3i_bf16(float x)
+{
+    return h3i_bf16_to_f32(h3i_bf16_bits(x));
+}
 
 #define H3I_CANVAS_MULTIPLE 32
 #define H3I_MAX_PIXELS (768 * 1344)

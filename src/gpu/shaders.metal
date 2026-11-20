@@ -1,3 +1,7 @@
+/* Derived from h3.c commit 8974cc0 (MIT, Salvatore Sanfilippo):
+ * prefixes renamed h3_/H3_ -> h3i_/H3I_ and extended with the
+ * h3-image additions (GGUF dequant convert, NE handoff). See SPEC.md
+ * provenance. Do not hand-edit the derived portion; port from h3.c. */
 #include <metal_stdlib>
 #ifdef H3I_METAL_HAS_TENSOR
 #include <metal_tensor>
@@ -3515,7 +3519,7 @@ kernel void h3i_gate_adaln_quantize_int8(
     }
 }
 
-kernel void h3i_qkv_rope_bf16(device const ushort *qkv [[buffer(0)]],
+kernel void h3i_qkv_rope_bf16_h3c(device const ushort *qkv [[buffer(0)]],
                              device const ushort *q_weight [[buffer(1)]],
                              device const ushort *k_weight [[buffer(2)]],
                              device const ushort *rope_cos [[buffer(3)]],
@@ -3955,7 +3959,7 @@ kernel void h3i_rope_text_bf16(
     }
 }
 
-kernel void h3i_gqa_causal_bf16(
+kernel void h3i_gqa_causal_bf16_h3c(
         device const ushort *query [[buffer(0)]],
         device const ushort *key [[buffer(1)]],
         device const ushort *value [[buffer(2)]],
