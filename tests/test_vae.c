@@ -200,13 +200,17 @@ static void test_decode(void) {
                 "decoder.x_embedder.weight",
                 "decoder.transformer_blocks.0.attn.to_qkv.weight",
             };
+            double wrel[2] = {-1.0, -1.0};
+            const char *dta = "?";
+            const char *dtb = "?";
             for (int i = 0; i < 2; i++) {
                 const h3i_tensor_rec *ra = h3i_source_find(&source, probe_names[i]);
                 const h3i_tensor_rec *rb = h3i_source_find(&src32, probe_names[i]);
                 if (ra && rb) {
+                    dta = h3i_type_name(ra->type);
+                    dtb = h3i_type_name(rb->type);
                     printf("vae %s: gguf-side %s, official-side %s\n",
-                           probe_names[i], h3i_type_name(ra->type),
-                           h3i_type_name(rb->type));
+                           probe_names[i], dta, dtb);
                     if (ra->elements == rb->elements) {
                         float *wa = h3i_source_read_f32(&source, probe_names[i],
                                                         ra->elements, err,
@@ -221,8 +225,9 @@ static void test_decode(void) {
                                 num += d * d;
                                 den += (double)wb[j] * (double)wb[j];
                             }
+                            wrel[i] = sqrt(num / (den > 0.0 ? den : 1.0));
                             printf("vae weight rel L2 %s: %.4g\n", probe_names[i],
-                                   sqrt(num / (den > 0.0 ? den : 1.0)));
+                                   wrel[i]);
                         }
                         free(wa);
                         free(wb);
@@ -247,7 +252,10 @@ static void test_decode(void) {
                     ub[i] = h3i_unit_to_u8(b[i]);
                 }
                 double psnr = psnr_u8(ua, ub, n);
-                CHECK(psnr > 40.0, "F16 vs F32 PSNR %.1f dB (want > 40)", psnr);
+                CHECK(psnr > 40.0,
+                      "F16 vs F32 PSNR %.1f dB (want > 40); gguf %s vs official "
+                      "%s, weight rel L2 x_embed %.4g qkv %.4g [%s]",
+                      psnr, dta, dtb, wrel[0], wrel[1], f32_path);
                 free(ua);
                 free(ub);
             }
