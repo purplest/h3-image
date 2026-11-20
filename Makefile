@@ -38,7 +38,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 TOOL_SRCS := $(wildcard tools/*.c)
 TOOL_BINS := $(patsubst tools/%.c,build/%,$(TOOL_SRCS))
 
-.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax tests-build check bench
+.PHONY: all lib test test-quick check-images tools clean core-tests objc-syntax test-syntax tests-build check bench metal-lint
 
 all: h3-image build/h3i_shaders.metal
 
@@ -187,6 +187,9 @@ objc-syntax:
 # Syntax-check the Apple-only branches of tests/tools on Linux: -D__APPLE__
 # selects the GPU code paths, which only need the pure-C gpu.h declarations
 # (no linking). Catches libm/API mistakes in test code before the Mac build.
+metal-lint:
+	python3 tools/lint_metal.py
+
 test-syntax:
 	@for f in $(TEST_SRCS) $(TOOL_SRCS); do \
 		echo "== test-syntax $$f"; \
