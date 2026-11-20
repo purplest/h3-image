@@ -60,8 +60,12 @@ def main(paths):
             name, params = m.group(1), m.group(2)
             sizes = set()
             for d in DECL.finditer(params):
+                if d.group(3):
+                    bad.append(f'{p}: {name}: component stage attribute '
+                               f'[[...{d.group(3)}]] is not valid MSL; use vectors')
+                    continue
                 vec = int(d.group(2)) if d.group(2) else 1
-                sizes.add(1 if d.group(3) else vec)
+                sizes.add(vec)
             if len(sizes) > 1:
                 bad.append(f'{p}: {name}: mixed stage-input sizes {sorted(sizes)}')
     if bad:
