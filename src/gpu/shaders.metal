@@ -3519,7 +3519,7 @@ kernel void h3i_gate_adaln_quantize_int8(
     }
 }
 
-kernel void h3i_qkv_rope_bf16(device const ushort *qkv [[buffer(0)]],
+kernel void h3i_qkv_rope_bf16_h3c(device const ushort *qkv [[buffer(0)]],
                              device const ushort *q_weight [[buffer(1)]],
                              device const ushort *k_weight [[buffer(2)]],
                              device const ushort *rope_cos [[buffer(3)]],
@@ -3959,7 +3959,7 @@ kernel void h3i_rope_text_bf16(
     }
 }
 
-kernel void h3i_gqa_causal_bf16(
+kernel void h3i_gqa_causal_bf16_h3c(
         device const ushort *query [[buffer(0)]],
         device const ushort *key [[buffer(1)]],
         device const ushort *value [[buffer(2)]],

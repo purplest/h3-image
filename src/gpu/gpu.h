@@ -434,7 +434,7 @@ int h3i_gpu_gate_adaln_quantize_int8(
                      uint32_t padded_rows, uint32_t width, uint32_t slots,
                      uint32_t gate_slot, uint32_t shift_slot,
                      uint32_t scale_slot, float epsilon);
-int h3i_gpu_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
+int h3i_gpu_qkv_rope_bf16_h3c(h3i_gpu *gpu, h3i_gpu_tensor *query,
                          h3i_gpu_tensor *key, h3i_gpu_tensor *value,
                          const h3i_gpu_tensor *qkv,
                          const h3i_gpu_tensor *q_norm,
@@ -445,7 +445,7 @@ int h3i_gpu_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
                          uint32_t rope_half, float epsilon);
 /* H3 checkpoint QKV rows are [head, q/k/v, dimension], unlike the
  * conventional [q/k/v, head, dimension] layout accepted above. */
-int h3i_gpu_grouped_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
+int h3i_gpu_grouped_qkv_rope_bf16_h3c(h3i_gpu *gpu, h3i_gpu_tensor *query,
                                  h3i_gpu_tensor *key, h3i_gpu_tensor *value,
                                  const h3i_gpu_tensor *qkv,
                                  const h3i_gpu_tensor *q_norm,
@@ -534,7 +534,7 @@ int h3i_gpu_rope_text_bf16(h3i_gpu *gpu, h3i_gpu_tensor *query,
                           const h3i_gpu_tensor *rope_sin_f32,
                           uint32_t sequence, uint32_t query_heads,
                           uint32_t kv_heads, uint32_t head_dim);
-int h3i_gpu_gqa_causal_bf16(h3i_gpu *gpu, h3i_gpu_tensor *output,
+int h3i_gpu_gqa_causal_bf16_h3c(h3i_gpu *gpu, h3i_gpu_tensor *output,
                            const h3i_gpu_tensor *query,
                            const h3i_gpu_tensor *key,
                            const h3i_gpu_tensor *value,
@@ -647,3 +647,25 @@ int h3i_gpu_f16_to_bf16_checked(h3i_gpu *gpu, h3i_gpu_tensor *out,
 int h3i_gpu_transpose_bf16_f16(h3i_gpu *gpu, h3i_gpu_tensor *out,
                                const h3i_gpu_tensor *in, size_t row_off,
                                size_t rows, size_t cols, float scale);
+
+/* Spec-exact QKV RoPE (grouped flag) and chunked causal GQA; the reference
+ * MLX-matched variants are available as *_h3c. */
+int h3i_gpu_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *q, h3i_gpu_tensor *k,
+                          h3i_gpu_tensor *v, const h3i_gpu_tensor *qkv,
+                          const h3i_gpu_tensor *cosb, const h3i_gpu_tensor *sinb,
+                          const h3i_gpu_tensor *q_norm, const h3i_gpu_tensor *k_norm,
+                          size_t rows, size_t heads, size_t hd, size_t rope_half,
+                          float eps, int grouped);
+int h3i_gpu_grouped_qkv_rope_bf16(h3i_gpu *gpu, h3i_gpu_tensor *q,
+                                  h3i_gpu_tensor *k, h3i_gpu_tensor *v,
+                                  const h3i_gpu_tensor *qkv,
+                                  const h3i_gpu_tensor *q_norm,
+                                  const h3i_gpu_tensor *k_norm,
+                                  const h3i_gpu_tensor *rope_cos,
+                                  const h3i_gpu_tensor *rope_sin,
+                                  size_t rows, size_t heads, size_t hd,
+                                  size_t rope_half, float eps);
+int h3i_gpu_gqa_causal_bf16(h3i_gpu *gpu, h3i_gpu_tensor *out,
+                            const h3i_gpu_tensor *q, const h3i_gpu_tensor *k,
+                            const h3i_gpu_tensor *v, size_t seq, size_t qheads,
+                            size_t kvheads, size_t hd, float scale);
