@@ -1,0 +1,9 @@
+build/
+h3-image
+outputs/
+*.o
+*.d
+.DS_Store
+
+# Local rebuild specification — intentionally not committed (user request).
+SPEC.md
