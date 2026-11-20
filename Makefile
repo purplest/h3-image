@@ -189,6 +189,7 @@ objc-syntax:
 # (no linking). Catches libm/API mistakes in test code before the Mac build.
 metal-lint:
 	python3 tools/lint_metal.py
+	python3 tools/lint_bindings.py
 
 test-syntax:
 	@for f in $(TEST_SRCS) $(TOOL_SRCS); do \
