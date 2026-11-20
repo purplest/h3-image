@@ -18,46 +18,134 @@ static double rnd(void)
     return (double)rand() / (double)RAND_MAX * 2.0 - 1.0;
 }
 
-/* F32 causal GQA reference mirroring the kernel's operation order
- * (SPEC §6.3.5). A double reference is unusable with the BF16-bit-step
- * metric: near-zero cancelled outputs make 1e-7 absolute F32 error span
- * millions of subnormal bit steps. Same-precision reference keeps the
- * spec's <=1 BF16 step tolerance meaningful. Layout [seq][heads][hd]. */
+/* F32 causal GQA reference mirroring the kernel's exact operation AND
+ * reduction order (128-thread strided partials + halving tree, chunked
+ * online softmax beyond 4096 keys). Precision alone is not enough: at
+ * near-zero cancelled outputs, different summation orders differ by ~1e-7
+ * absolute, which the BF16 bit-step metric amplifies without bound.
+ * Mirroring the order leaves only Metal math-ulp differences (<=1 step).
+ * Layout [seq][heads][hd]. */
+#define REF_THREADS 128
+#define REF_CHUNK 4096
+
+static float ref_tree_max(float *partial)
+{
+    for (uint32_t s = REF_THREADS / 2; s > 0; s >>= 1) {
+        for (uint32_t tid = 0; tid < s; tid++) {
+            partial[tid] = fmaxf(partial[tid], partial[tid + s]);
+        }
+    }
+    return partial[0];
+}
+
+static float ref_tree_sum(float *partial)
+{
+    for (uint32_t s = REF_THREADS / 2; s > 0; s >>= 1) {
+        for (uint32_t tid = 0; tid < s; tid++) {
+            partial[tid] += partial[tid + s];
+        }
+    }
+    return partial[0];
+}
+
 static void cpu_causal(const uint16_t *q, const uint16_t *k, const uint16_t *v,
                        uint16_t *out, size_t seq, size_t qh, size_t kvh, size_t hd,
                        double scale_d)
 {
     float scale = (float)scale_d;
     size_t group = qh / kvh;
-    float *scores = malloc(seq * sizeof(float));
+    float *scores = malloc(REF_CHUNK * sizeof(float));
+    float partial[REF_THREADS];
     for (size_t t = 0; t < seq; t++) {
         for (size_t h = 0; h < qh; h++) {
             size_t kv = h / group;
             const uint16_t *qt = q + (t * qh + h) * hd;
-            float mx = -INFINITY;
-            for (size_t j = 0; j <= t; j++) {
-                const uint16_t *kj = k + (j * kvh + kv) * hd;
-                float dot = 0.0f;
+            size_t nkeys = t + 1;
+            if (nkeys <= REF_CHUNK) {
+                /* exact path: same order as the kernel's <=4096 branch */
+                for (size_t j = 0; j < nkeys; j++) {
+                    const uint16_t *kj = k + (j * kvh + kv) * hd;
+                    float dot = 0.0f;
+                    for (size_t d = 0; d < hd; d++) {
+                        dot = fmaf(bf16_f(qt[d]), bf16_f(kj[d]), dot);
+                    }
+                    scores[j] = dot * scale;
+                }
+                for (uint32_t tid = 0; tid < REF_THREADS; tid++) {
+                    float m = -INFINITY;
+                    for (size_t j = tid; j < nkeys; j += REF_THREADS) {
+                        m = fmaxf(m, scores[j]);
+                    }
+                    partial[tid] = m;
+                }
+                float mx = ref_tree_max(partial);
+                for (uint32_t tid = 0; tid < REF_THREADS; tid++) {
+                    float sum = 0.0f;
+                    for (size_t j = tid; j < nkeys; j += REF_THREADS) {
+                        float e = expf(scores[j] - mx);
+                        scores[j] = e;
+                        sum += e;
+                    }
+                    partial[tid] = sum;
+                }
+                float inv = 1.0f / ref_tree_sum(partial);
                 for (size_t d = 0; d < hd; d++) {
-                    dot = fmaf(bf16_f(qt[d]), bf16_f(kj[d]), dot);
+                    float a = 0.0f;
+                    for (size_t j = 0; j < nkeys; j++) {
+                        const uint16_t *vj = v + (j * kvh + kv) * hd;
+                        float pj = scores[j] * inv;
+                        a = fmaf(pj, bf16_f(vj[d]), a);
+                    }
+                    out[(t * qh + h) * hd + d] = f_bf16(a);
                 }
-                scores[j] = dot * scale;
-                mx = fmaxf(mx, scores[j]);
+                continue;
             }
-            float sum = 0.0f;
-            for (size_t j = 0; j <= t; j++) {
-                scores[j] = expf(scores[j] - mx);
-                sum += scores[j];
+            float m_run = -INFINITY, l_run = 0.0f;
+            float acc[128];
+            for (size_t d = 0; d < hd; d++) acc[d] = 0.0f;
+            for (size_t c0 = 0; c0 < nkeys; c0 += REF_CHUNK) {
+                size_t cn = nkeys - c0;
+                if (cn > REF_CHUNK) cn = REF_CHUNK;
+                for (size_t j = 0; j < cn; j++) {
+                    const uint16_t *kj = k + ((c0 + j) * kvh + kv) * hd;
+                    float dot = 0.0f;
+                    for (size_t d = 0; d < hd; d++) {
+                        dot = fmaf(bf16_f(qt[d]), bf16_f(kj[d]), dot);
+                    }
+                    scores[j] = dot * scale;
+                }
+                for (uint32_t tid = 0; tid < REF_THREADS; tid++) {
+                    float m = -INFINITY;
+                    for (size_t j = tid; j < cn; j += REF_THREADS) {
+                        m = fmaxf(m, scores[j]);
+                    }
+                    partial[tid] = m;
+                }
+                float cmx = ref_tree_max(partial);
+                float new_m = fmaxf(m_run, cmx);
+                float rescale = expf(m_run - new_m);
+                for (uint32_t tid = 0; tid < REF_THREADS; tid++) {
+                    float sum = 0.0f;
+                    for (size_t j = tid; j < cn; j += REF_THREADS) {
+                        float e = expf(scores[j] - new_m);
+                        scores[j] = e;
+                        sum += e;
+                    }
+                    partial[tid] = sum;
+                }
+                float csum = ref_tree_sum(partial);
+                l_run = l_run * rescale + csum;
+                for (size_t d = 0; d < hd; d++) {
+                    acc[d] = acc[d] * rescale;
+                    for (size_t j = 0; j < cn; j++) {
+                        const uint16_t *vj = v + ((c0 + j) * kvh + kv) * hd;
+                        acc[d] = fmaf(scores[j], bf16_f(vj[d]), acc[d]);
+                    }
+                }
+                m_run = new_m;
             }
-            float inv = 1.0f / sum;
             for (size_t d = 0; d < hd; d++) {
-                float acc = 0.0f;
-                for (size_t j = 0; j <= t; j++) {
-                    const uint16_t *vj = v + (j * kvh + kv) * hd;
-                    float pj = scores[j] * inv;
-                    acc = fmaf(pj, bf16_f(vj[d]), acc);
-                }
-                out[(t * qh + h) * hd + d] = f_bf16(acc);
+                out[(t * qh + h) * hd + d] = f_bf16(acc[d] / l_run);
             }
         }
     }
