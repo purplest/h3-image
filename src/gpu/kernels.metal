@@ -293,12 +293,13 @@ kernel void h3i_gqa_causal_bf16(device ushort *out [[buffer(0)]],
                                 const device ushort *k [[buffer(2)]],
                                 const device ushort *v [[buffer(3)]],
                                 constant GqaParams &p [[buffer(4)]],
-                                uint2 tgid [[threadgroup_position_in_grid]],
-                                uint tid [[thread_position_in_threadgroup]])
+                                uint tgx [[threadgroup_position_in_grid.x]],
+                                uint tgy [[threadgroup_position_in_grid.y]],
+                                uint tid [[thread_position_in_threadgroup.x]])
 {
     threadgroup float scores[GQA_CHUNK];
     threadgroup float red[GQA_THREADS];
-    uint t = tgid.x, h = tgid.y;
+    uint t = tgx, h = tgy;
     if (t >= p.seq || h >= p.qheads || tid >= GQA_THREADS) {
         return;
     }
