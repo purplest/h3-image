@@ -381,6 +381,45 @@ static void test_real_weights(void)
         }
     }
     h3i_source_free(&s);
+
+    /* Text encoder GGUF (SPEC §6.5: 902 tensors). The official name must
+     * resolve through the one-way alias on the real file. */
+    snprintf(path, sizeof path,
+             "%s/models/MiniMax-H3-Image-GGUF/qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
+             home);
+    f = fopen(path, "rb");
+    if (f == NULL) {
+        printf("skip: real TE weights (%s absent)\n", path);
+        return;
+    }
+    fclose(f);
+    h3i_source te = {0};
+    CHECK(h3i_source_add(&te, path, err, sizeof err), "open real TE: %s", err);
+    CHECK(te.count == 902, "TE tensor count %zu (want 902)", te.count);
+    const h3i_tensor_rec *q = h3i_source_find(
+        &te, "model.language_model.layers.0.self_attn.q_proj.weight");
+    CHECK(q != NULL && q->type == H3I_TYPE_Q2_K,
+          "TE q_proj present via alias, Q2_K");
+    if (q != NULL) {
+        CHECK(q->elements == 8192ULL * 5120ULL, "TE q_proj elements");
+        uint8_t *raw = malloc((size_t)q->bytes);
+        CHECK(raw != NULL, "alloc TE raw buffer");
+        if (raw != NULL) {
+            if (h3i_source_read_raw(q, raw, 0, 1, err, sizeof err)) {
+                float out[256];
+                h3i_dequant_block(q->type, raw, out);
+                int finite = 1;
+                for (int i = 0; i < 256; i++) {
+                    if (!isfinite(out[i])) finite = 0;
+                }
+                CHECK(finite, "real Q2_K block finite");
+            } else {
+                CHECK(0, "read TE tensor: %s (weights file truncated?)", err);
+            }
+            free(raw);
+        }
+    }
+    h3i_source_free(&te);
 }
 
 #ifdef __APPLE__
