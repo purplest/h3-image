@@ -40,6 +40,7 @@ enum {
 
 @protocol MTLComputePipelineState <NSObject>
 @property (readonly) NSUInteger maxTotalThreadsPerThreadgroup;
+@property (readonly) NSUInteger staticThreadgroupMemoryLength;
 @end
 
 @protocol MTLDeviceArchitecture <NSObject>

@@ -103,7 +103,7 @@
 @property(nonatomic, strong) id<MTLLibrary> library;
 @property(nonatomic, strong) id<MTLCommandBuffer> command;
 @property(nonatomic, strong) NSMutableArray<id<MTLCommandBuffer>> *inflightCommands;
-@property(nonatomic, strong) NSDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLComputePipelineState>> *pipelines;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, H3SDPA *> *sdpaCache;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, H3GQA *> *gqaCache;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, H3Linear *> *linearCache;
@@ -4889,6 +4889,10 @@ int h3i_gpu_transpose_bf16_f16(h3i_gpu *opaque, h3i_gpu_tensor *out,
     gpu.stats = stats;
     return 1;
 }
+
+/* Parameter structs mirroring the MSL definitions in kernels.metal. */
+typedef struct { uint32_t rows, heads, hd, rope_half; float eps; uint32_t grouped; } QkvRopeParams;
+typedef struct { uint32_t seq, qheads, kvheads, hd; float scale; } GqaParams;
 
 /* ---- h3-image spec-exact QKV RoPE and causal GQA ops ----
  * The reference _h3c variants match MLX numerics and single-pass limits;
