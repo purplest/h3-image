@@ -108,7 +108,7 @@ static void test_checked(h3i_gpu *g)
 
     /* round trip: bf16 → f16 → bf16 exact for half-normal-range values */
     for (int i = 0; i < N; i++) {
-        double mag = pow(2.0, -14.0 + rnd() * 29.0); /* [2^-14, ~2^15) */
+        double mag = pow(2.0, -14.0 + (rnd() * 0.5 + 0.5) * 29.0); /* [2^-14, 2^15) */
         in[i] = f_bf16((float)(rnd() > 0 ? mag : -mag));
     }
     h3i_gpu_tensor *tb = h3i_gpu_tensor_from_bf16(g, in, N);

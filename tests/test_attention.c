@@ -18,39 +18,46 @@ static double rnd(void)
     return (double)rand() / (double)RAND_MAX * 2.0 - 1.0;
 }
 
-/* Double-precision causal GQA reference, layout [seq][heads][hd]. */
+/* F32 causal GQA reference mirroring the kernel's operation order
+ * (SPEC §6.3.5). A double reference is unusable with the BF16-bit-step
+ * metric: near-zero cancelled outputs make 1e-7 absolute F32 error span
+ * millions of subnormal bit steps. Same-precision reference keeps the
+ * spec's <=1 BF16 step tolerance meaningful. Layout [seq][heads][hd]. */
 static void cpu_causal(const uint16_t *q, const uint16_t *k, const uint16_t *v,
                        uint16_t *out, size_t seq, size_t qh, size_t kvh, size_t hd,
-                       double scale)
+                       double scale_d)
 {
+    float scale = (float)scale_d;
     size_t group = qh / kvh;
-    double *scores = malloc(seq * sizeof(double));
+    float *scores = malloc(seq * sizeof(float));
     for (size_t t = 0; t < seq; t++) {
         for (size_t h = 0; h < qh; h++) {
             size_t kv = h / group;
-            double mx = -1e300;
+            const uint16_t *qt = q + (t * qh + h) * hd;
+            float mx = -INFINITY;
             for (size_t j = 0; j <= t; j++) {
-                double dot = 0;
+                const uint16_t *kj = k + (j * kvh + kv) * hd;
+                float dot = 0.0f;
                 for (size_t d = 0; d < hd; d++) {
-                    dot += (double)bf16_f(q[(t * qh + h) * hd + d]) *
-                           bf16_f(k[(j * kvh + kv) * hd + d]);
+                    dot = fmaf(bf16_f(qt[d]), bf16_f(kj[d]), dot);
                 }
                 scores[j] = dot * scale;
-                if (scores[j] > mx) {
-                    mx = scores[j];
-                }
+                mx = fmaxf(mx, scores[j]);
             }
-            double sum = 0;
+            float sum = 0.0f;
             for (size_t j = 0; j <= t; j++) {
-                scores[j] = exp(scores[j] - mx);
+                scores[j] = expf(scores[j] - mx);
                 sum += scores[j];
             }
+            float inv = 1.0f / sum;
             for (size_t d = 0; d < hd; d++) {
-                double acc = 0;
+                float acc = 0.0f;
                 for (size_t j = 0; j <= t; j++) {
-                    acc += scores[j] / sum * bf16_f(v[(j * kvh + kv) * hd + d]);
+                    const uint16_t *vj = v + (j * kvh + kv) * hd;
+                    float pj = scores[j] * inv;
+                    acc = fmaf(pj, bf16_f(vj[d]), acc);
                 }
-                out[(t * qh + h) * hd + d] = f_bf16((float)acc);
+                out[(t * qh + h) * hd + d] = f_bf16(acc);
             }
         }
     }
