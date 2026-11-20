@@ -73,16 +73,18 @@ static void run_case(h3i_gpu *g, size_t seq, size_t qh, size_t kvh, size_t hd,
     float scale = (float)(1.0 / sqrt((double)hd));
 
     CHECK(h3i_gpu_begin(g), "%s begin", name);
-    CHECK(h3i_gpu_gqa_causal_bf16(g, ty, tq, tk, tv, seq, qh, kvh, hd, scale),
+    CHECK(h3i_gpu_gqa_causal_bf16(g, ty, tq, tk, tv, (uint32_t)seq, (uint32_t)qh,
+                                (uint32_t)kvh, (uint32_t)hd, scale),
           "%s op: %s", name, h3i_gpu_error(g));
     CHECK(h3i_gpu_submit(g), "%s submit: %s", name, h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y1, nq);
+    h3i_gpu_tensor_read_bf16(ty, y1, nq);
 
     /* repeatability */
     CHECK(h3i_gpu_begin(g), "%s begin 2", name);
-    CHECK(h3i_gpu_gqa_causal_bf16(g, ty, tq, tk, tv, seq, qh, kvh, hd, scale), "%s op 2", name);
+    CHECK(h3i_gpu_gqa_causal_bf16(g, ty, tq, tk, tv, (uint32_t)seq, (uint32_t)qh,
+                                (uint32_t)kvh, (uint32_t)hd, scale), "%s op 2", name);
     CHECK(h3i_gpu_submit(g), "%s submit 2", name);
-    h3i_gpu_read_bf16(ty, y2, nq);
+    h3i_gpu_tensor_read_bf16(ty, y2, nq);
     CHECK(memcmp(y1, y2, nq * 2) == 0, "%s bit-repeatable", name);
 
     cpu_causal(q, k, v, ref, seq, qh, kvh, hd, 1.0 / sqrt((double)hd));

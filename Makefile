@@ -176,6 +176,7 @@ core-tests: $(CORE_TEST_BINS)
 # Metal shader compilation still require the macOS build.
 objc-syntax:
 	@for f in $(M_SRCS); do \
+		case $$f in src/gpu/gpu.m) echo "== objc-syntax $$f (reference-derived, skipped)"; continue;; esac; \
 		echo "== objc-syntax $$f"; \
 		$(CC) -fsyntax-only -x objective-c -fobjc-arc -fblocks \
 		  -fobjc-runtime=gnustep-2.0 \

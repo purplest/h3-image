@@ -434,8 +434,8 @@ static void test_dequant_gpu(void)
         CHECK(h3i_gpu_convert_raw(g, tb, 0, traw, 3, type, elements),
               "convert bf16 type %d: %s", type, h3i_gpu_error(g));
         CHECK(h3i_gpu_submit(g), "gpu submit type %d: %s", type, h3i_gpu_error(g));
-        h3i_gpu_read_f32(tf, got, elements + 7);
-        h3i_gpu_read_bf16(tb, gotb, elements);
+        h3i_gpu_tensor_read_f32(tf, got, elements + 7);
+        h3i_gpu_tensor_read_bf16(tb, gotb, elements);
         int bad = -1;
         for (size_t i = 0; i < elements; i++) {
             if (bits_of(got[7 + i]) != bits_of(cpu[i])) {

@@ -11,13 +11,17 @@ wins; where SPEC.md and the original reference code disagree, the spec's Part 7 
   GPU convert half lands with M1)
 - M3 layout + host math — ✅ committed `d03763e` (A2 bit-exact vs independent Python vectors;
   267 checks total, 0 failures on Linux)
-- M1 GPU runtime — code complete (gpu.h, context.m, tensor.m, ops_h3i.m,
-  shaders.metal + kernels.metal: 52 pipelines; test_gpu_ops / test_attention /
-  test_handoff / test_gguf GPU half / bench_gpu). **Gate pending first Mac sync.**
-  First-pass deviations (numerics preserved, upgrade in M12): SDPA built from
-  graph matmul+softmax ops instead of the fused MPSGraph SDPA op; conv3d as a
-  direct F32 fma kernel instead of MPSGraph Conv3D. MPSGraph selector sites are
-  marked `MPSGRAPH-API` in ops_h3i.m for quick fixing if the Mac build objects.
+- M1 GPU runtime — **rebased on the reference implementation** (user-provided
+  h3.c at commit 8974cc0, MIT): src/gpu/gpu.h/gpu.m/shaders.metal are the
+  reference GPU layer with h3_/H3_ prefixes renamed to h3i_/H3I_, plus
+  h3-image additions (GGUF dequant convert kernels, NE handoff kernels,
+  tensor_contents/new_u32/get_info) in kernels.metal and appended to gpu.m.
+  The blind-written context.m/tensor.m/ops_h3i.m were removed. Tests aligned
+  to the reference signatures. Local verification: core-tests 267 checks,
+  test-syntax clean on all tests/tools, dispatched-kernel-name cross-check
+  (87 definitions incl. macros/templates vs 109 dispatch names: all present),
+  dry-run command-shape assertion. Mac runtime gate pending (one command:
+  sh tools/mac_check.sh).
 - First Mac sync batch: `make lib` + test_gpu_ops, test_gguf (incl. real-weight
   checks), test_weights, test_layout, test_attention, test_handoff, bench_gpu.
 - M4–M12 — pending

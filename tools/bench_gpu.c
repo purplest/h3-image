@@ -43,8 +43,10 @@ static double bench_linear(h3i_gpu *g, size_t rows, size_t in_w, size_t out_w, i
     for (int it = 0; it < 3; it++) {
         double t0 = h3i_now();
         if (!h3i_gpu_begin(g) ||
-            !(mlp ? h3i_gpu_mlp_bf16(g, ty, tx, tw1, tw2, rows, in_w, 14336, out_w)
-                  : h3i_gpu_linear_bf16(g, ty, tx, tw1, NULL, rows, in_w, out_w)) ||
+            !(mlp ? h3i_gpu_mlp_bf16(g, ty, tx, tw1, tw2, (uint32_t)rows, (uint32_t)in_w,
+                           14336, (uint32_t)out_w)
+                  : h3i_gpu_linear_bf16(g, ty, tx, tw1, NULL, (uint32_t)rows,
+                          (uint32_t)in_w, (uint32_t)out_w)) ||
             !h3i_gpu_submit(g)) {
             fprintf(stderr, "bench failed: %s\n", h3i_gpu_error(g));
             exit(1);
@@ -105,7 +107,8 @@ int main(int argc, char **argv)
         for (int it = 0; it < 3; it++) {
             double t0 = h3i_now();
             if (!h3i_gpu_begin(g) ||
-                !h3i_gpu_sdpa_bf16(g, ty, tq, tq, tq, s, 56, 128, 1.0f / sqrtf(128.0f)) ||
+                !h3i_gpu_sdpa_bf16(g, ty, tq, tq, tq, (uint32_t)s, 56, 128,
+                             1.0f / sqrtf(128.0f)) ||
                 !h3i_gpu_submit(g)) {
                 fprintf(stderr, "sdpa failed: %s\n", h3i_gpu_error(g));
                 return 1;

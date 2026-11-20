@@ -53,7 +53,7 @@ static void test_norms(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin");
     CHECK(h3i_gpu_rms_norm_bf16(g, ty, tx, tw, R, W, 1e-5f), "rms op");
     CHECK(h3i_gpu_submit(g), "submit: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty, y, R * W);
     for (int r = 0; r < R; r++) {
         double ss = 0;
         for (int i = 0; i < W; i++) {
@@ -75,7 +75,7 @@ static void test_norms(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin ln");
     CHECK(h3i_gpu_layer_norm_bf16(g, ty, tx, tw, tb, R, W, 1e-6f), "layer op");
     CHECK(h3i_gpu_submit(g), "submit ln: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty, y, R * W);
     for (int r = 0; r < R; r++) {
         double mean = 0;
         for (int i = 0; i < W; i++) {
@@ -123,7 +123,7 @@ static void test_adaln_gate(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin adaln");
     CHECK(h3i_gpu_adaln_bf16(g, ty, tx, tnw, tmod, tmap, R, W, SLOTS, 0, 1, 1e-5f), "adaln op");
     CHECK(h3i_gpu_submit(g), "submit adaln: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty, y, R * W);
     for (int r = 0; r < R; r++) {
         double ss = 0;
         for (int i = 0; i < W; i++) {
@@ -151,7 +151,7 @@ static void test_adaln_gate(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin gate");
     CHECK(h3i_gpu_gate_bf16(g, ty, tx, tbr, tgm, tmap, R, W, SLOTS, 2), "gate op");
     CHECK(h3i_gpu_submit(g), "submit gate: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty, y, R * W);
     int exact = 1;
     for (int r = 0; r < R && exact; r++) {
         size_t mb = (size_t)map[r] * SLOTS * W + 2 * W;
@@ -172,7 +172,7 @@ static void test_adaln_gate(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin add");
     CHECK(h3i_gpu_add_bf16(g, ty2, tx, tbr, R * W), "add op");
     CHECK(h3i_gpu_submit(g), "submit add: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty2, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty2, y, R * W);
     exact = 1;
     for (size_t i = 0; i < R * W; i++) {
         if (y[i] != f_bf16(bf16_f(x[i]) + bf16_f(branch[i]))) {
@@ -202,7 +202,7 @@ static void test_swiglu(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin swiglu");
     CHECK(h3i_gpu_swiglu_bf16(g, ty, tf, R, W), "swiglu op");
     CHECK(h3i_gpu_submit(g), "submit swiglu: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty, y, R * W);
     for (int r = 0; r < R; r++) {
         for (int i = 0; i < W; i++) {
             double gate = bf16_f(fused[r * 2 * W + i]);
@@ -221,7 +221,7 @@ static void test_swiglu(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin silu_mul");
     CHECK(h3i_gpu_silu_mul_bf16(g, ty, tf, tu, R * W), "silu_mul op");
     CHECK(h3i_gpu_submit(g), "submit silu_mul: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * W);
+    h3i_gpu_tensor_read_bf16(ty, y, R * W);
     for (size_t i = 0; i < R * W; i++) {
         double gate = bf16_f(fused[i]);
         double s = gate / (1.0 + exp(-gate));
@@ -249,7 +249,7 @@ static void test_linear(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin lin");
     CHECK(h3i_gpu_linear_bf16(g, ty, tx, tW, tb, R, IN, OUT), "linear op");
     CHECK(h3i_gpu_submit(g), "submit lin: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, R * OUT);
+    h3i_gpu_tensor_read_bf16(ty, y, R * OUT);
     double maxref = 0, maxerr = 0;
     for (int r = 0; r < R; r++) {
         for (int o = 0; o < OUT; o++) {
@@ -282,7 +282,7 @@ static void test_linear(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin lin2");
     CHECK(h3i_gpu_linear_bf16(g, ty2, tx2, tW2, tb2, R2, IN2, OUT2), "linear mps op");
     CHECK(h3i_gpu_submit(g), "submit lin2: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty2, y2, R2 * OUT2);
+    h3i_gpu_tensor_read_bf16(ty2, y2, R2 * OUT2);
     maxref = 0;
     maxerr = 0;
     for (int r = 0; r < R2; r++) {
@@ -316,7 +316,7 @@ static void test_linear(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin linf");
     CHECK(h3i_gpu_linear_f32(g, tyf, txf, tWf, tbf, R3, IN3, OUT3), "linear f32 op");
     CHECK(h3i_gpu_submit(g), "submit linf: %s", h3i_gpu_error(g));
-    h3i_gpu_read_f32(tyf, yf, R3 * OUT3);
+    h3i_gpu_tensor_read_f32(tyf, yf, R3 * OUT3);
     maxref = 0;
     maxerr = 0;
     for (int r = 0; r < R3; r++) {
@@ -352,7 +352,7 @@ static void test_sdpa(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin sdpa");
     CHECK(h3i_gpu_sdpa_bf16(g, ty, tq, tk, tv, S, H, D, scale), "sdpa op");
     CHECK(h3i_gpu_submit(g), "submit sdpa: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(ty, y, S * H * D);
+    h3i_gpu_tensor_read_bf16(ty, y, S * H * D);
     double maxerr = 0;
     for (int t = 0; t < S; t++) {
         for (int h = 0; h < H; h++) {
@@ -405,8 +405,8 @@ static void test_rope_kernels(h3i_gpu *g)
     CHECK(h3i_gpu_begin(g), "begin rope");
     CHECK(h3i_gpu_rope_text_bf16(g, tq, tk, tc, ts, R, QH, KVH, D), "rope op");
     CHECK(h3i_gpu_submit(g), "submit rope: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(tq, qy, R * QH * D);
-    h3i_gpu_read_bf16(tk, ky, R * KVH * D);
+    h3i_gpu_tensor_read_bf16(tq, qy, R * QH * D);
+    h3i_gpu_tensor_read_bf16(tk, ky, R * KVH * D);
     int exact = 1;
     for (int r = 0; r < R && exact; r++) {
         for (int h = 0; h < QH; h++) {
@@ -453,12 +453,13 @@ static void test_rope_kernels(h3i_gpu *g)
     h3i_gpu_tensor *tqn = h3i_gpu_tensor_from_bf16(g, qn, D2);
     h3i_gpu_tensor *tkn = h3i_gpu_tensor_from_bf16(g, kn, D2);
     CHECK(h3i_gpu_begin(g), "begin qkv");
-    CHECK(h3i_gpu_qkv_rope_bf16(g, tqo, tko, tvo, tqkv, tcb, tsb, tqn, tkn,
-                                R2, H2, D2, RH, 1e-5f, 1), "qkv rope op");
+    CHECK(h3i_gpu_grouped_qkv_rope_bf16(g, tqo, tko, tvo, tqkv, tqn, tkn,
+                                          tcb, tsb, R2, H2, D2, RH, 1e-5f),
+          "qkv rope op");
     CHECK(h3i_gpu_submit(g), "submit qkv: %s", h3i_gpu_error(g));
-    h3i_gpu_read_bf16(tqo, qq, R2 * H2 * D2);
-    h3i_gpu_read_bf16(tko, kk, R2 * H2 * D2);
-    h3i_gpu_read_bf16(tvo, vv, R2 * H2 * D2);
+    h3i_gpu_tensor_read_bf16(tqo, qq, R2 * H2 * D2);
+    h3i_gpu_tensor_read_bf16(tko, kk, R2 * H2 * D2);
+    h3i_gpu_tensor_read_bf16(tvo, vv, R2 * H2 * D2);
     int worst = 0;
     for (int r = 0; r < R2; r++) {
         for (int h = 0; h < H2; h++) {
@@ -522,9 +523,10 @@ static void test_vae_helpers(h3i_gpu *g)
     h3i_gpu_tensor *ti = h3i_gpu_tensor_from_f32(g, in, H * W * C);
     h3i_gpu_tensor *to = h3i_gpu_tensor_new_f32(g, 3 * (H + 2 * P) * (W + 2 * P) * C);
     CHECK(h3i_gpu_begin(g), "begin pad");
-    CHECK(h3i_gpu_vae_encoder_pad_f32(g, to, ti, H, W, C, P), "pad op");
+    CHECK(h3i_gpu_vae_encoder_pad_f32(g, to, ti, 1, 1, H, W, C, 2, P, P, P, P),
+          "pad op");
     CHECK(h3i_gpu_submit(g), "submit pad: %s", h3i_gpu_error(g));
-    h3i_gpu_read_f32(to, out, 3 * (H + 2 * P) * (W + 2 * P) * C);
+    h3i_gpu_tensor_read_f32(to, out, 3 * (H + 2 * P) * (W + 2 * P) * C);
     int ok = 1;
     int OH = H + 2 * P, OW = W + 2 * P;
     for (int f = 0; f < 3 && ok; f++) {
@@ -565,7 +567,7 @@ static void test_vae_helpers(h3i_gpu *g)
     CHECK(h3i_gpu_conv3d_f32(g, tco, tci, tcw, tcb, N, D, HH, WW, CI, CO, K, K, K, 1, 1, 1),
           "conv3d op");
     CHECK(h3i_gpu_submit(g), "submit conv: %s", h3i_gpu_error(g));
-    h3i_gpu_read_f32(tco, cout, on);
+    h3i_gpu_tensor_read_f32(tco, cout, on);
     double maxerr = 0, maxref = 0;
     int OH2 = HH - K + 1, OW2 = WW - K + 1;
     for (int oy = 0; oy < OH2; oy++) {
