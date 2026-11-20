@@ -10,6 +10,7 @@
 typedef unsigned long NSUInteger;
 typedef long NSInteger;
 typedef signed char BOOL;
+typedef unsigned char Boolean;
 typedef unsigned short unichar;
 #define YES ((BOOL)1)
 #define NO  ((BOOL)0)
@@ -44,7 +45,24 @@ typedef NSComparisonResult (^NSComparator)(id obj1, id obj2);
 enum { NSLiteralSearch = 2, NSCaseInsensitiveSearch = 1, NSBackwardsSearch = 4 };
 
 @class NSString, NSMutableString, NSArray, NSMutableArray, NSDictionary,
-       NSMutableDictionary, NSData, NSMutableData, NSError, NSValue, NSNumber;
+       NSMutableDictionary, NSData, NSMutableData, NSError, NSValue, NSNumber,
+       NSURL;
+
+/* CoreFoundation bridge surface (declarations only). */
+typedef const void *CFTypeRef;
+typedef const struct __CFString *CFStringRef;
+typedef const struct __CFURL *CFURLRef;
+typedef const struct __CFDictionary *CFDictionaryRef;
+typedef const struct __CFNumber *CFNumberRef;
+typedef unsigned long CFTypeID;
+typedef int CFNumberType;
+enum { kCFNumberIntType = 9 };
+void CFRelease(CFTypeRef cf);
+CFTypeRef CFRetain(CFTypeRef cf);
+CFTypeID CFGetTypeID(CFTypeRef cf);
+CFTypeID CFNumberGetTypeID(void);
+Boolean CFNumberGetValue(CFNumberRef number, CFNumberType type, void *valuePtr);
+const void *CFDictionaryGetValue(CFDictionaryRef dict, const void *key);
 
 @protocol NSFastEnumeration
 - (NSUInteger)countByEnumeratingWithState:(void *)state
@@ -76,6 +94,10 @@ enum { NSLiteralSearch = 2, NSCaseInsensitiveSearch = 1, NSBackwardsSearch = 4 }
 
 @interface NSNull : NSObject
 + (NSNull *)null;
+@end
+
+@interface NSURL : NSObject
++ (instancetype)fileURLWithPath:(NSString *)path;
 @end
 
 @interface NSString : NSObject
