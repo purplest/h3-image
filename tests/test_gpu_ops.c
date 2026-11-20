@@ -331,8 +331,7 @@ static void test_adaln_gate(h3i_gpu *gpu) {
     size_t n = (size_t)ROWS * WIDTH;
     size_t mod_n = (size_t)MOD_ROWS * SLOTS * WIDTH;
     uint16_t *x = malloc(n * 2), *w = malloc(WIDTH * 2),
-             *mod = malloc(mod_n * 2), *got = malloc(n * 2),
-             *want = malloc(n * 2);
+             *mod = malloc(mod_n * 2), *got = malloc(n * 2);
     uint32_t row_map[ROWS];
     fill_bf16(x, n, -2.0, 2.0);
     fill_bf16(w, WIDTH, 0.5, 1.5);
@@ -351,12 +350,22 @@ static void test_adaln_gate(h3i_gpu *gpu) {
               h3i_gpu_submit(gpu),
           "adaln: %s", h3i_gpu_error(gpu));
     CHECK(h3i_gpu_tensor_read_bf16(to, got, n) == 1, "adaln read");
-    rms_reference(x, w, ROWS, WIDTH, 1e-5, want); /* norm part */
+    /* The kernel keeps the normalized value in F32 (no intermediate BF16
+     * rounding) and rounds once at the output: bf16((x*inv*w)*(1+scale)+shift).
+     * Mirror that in double; F32 reduction + rsqrt differences stay well
+     * inside the 3-step limit. */
     int worst = 0;
     for (size_t r = 0; r < ROWS; r++) {
+        double ss = 0.0;
+        for (size_t c = 0; c < WIDTH; c++) {
+            double v = (double)from_bf16(x[r * WIDTH + c]);
+            ss += v * v;
+        }
+        double inv = 1.0 / sqrt(ss / (double)WIDTH + 1e-5);
         size_t base = (size_t)row_map[r] * SLOTS * WIDTH;
         for (size_t c = 0; c < WIDTH; c++) {
-            double norm = (double)from_bf16(want[r * WIDTH + c]);
+            double norm = (double)from_bf16(x[r * WIDTH + c]) * inv *
+                          (double)from_bf16(w[c]);
             double scale = (double)from_bf16(mod[base + WIDTH + c]);
             double shift = (double)from_bf16(mod[base + c]);
             uint16_t expect = to_bf16((float)(norm * (1.0 + scale) + shift));
@@ -393,7 +402,7 @@ static void test_adaln_gate(h3i_gpu *gpu) {
         }
     }
     CHECK(worst == 0, "gate not exact: worst %d steps", worst);
-    free(x); free(w); free(mod); free(got); free(want); free(branch);
+    free(x); free(w); free(mod); free(got); free(branch);
     h3i_gpu_tensor_free(tx); h3i_gpu_tensor_free(tw); h3i_gpu_tensor_free(tm);
     h3i_gpu_tensor_free(tr); h3i_gpu_tensor_free(to); h3i_gpu_tensor_free(tb);
 }
