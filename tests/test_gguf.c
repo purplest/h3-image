@@ -404,7 +404,9 @@ static void test_dequant_gpu(void)
         size_t bytes = (size_t)NB * (size_t)info.block_bytes;
         uint8_t *raw = malloc(bytes);
         float *cpu = malloc(elements * 4);
-        float *got = malloc(elements * 4);
+        /* tf holds elements + 7 floats (output offset 7 is part of the test);
+         * the read below fetches all of them, so got must be that large. */
+        float *got = malloc((elements + 7) * 4);
         uint16_t *gotb = malloc(elements * 2);
         fill_random(raw, bytes);
         for (int b = 0; b < NB; b++) {
