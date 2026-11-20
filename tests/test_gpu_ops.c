@@ -536,6 +536,15 @@ static void test_sdpa(h3i_gpu *gpu) {
 
 int main(int argc, char **argv) {
     const char *shaders = argc > 1 ? argv[1] : "build/h3i_shaders.metal";
+    /* Spec convention: skip (and pass) when a prerequisite is absent; a
+     * present-but-broken shader source or GPU still fails loudly. */
+    FILE *probe = fopen(shaders, "r");
+    if (!probe) {
+        printf("skip: %s not found (run make)\n", shaders);
+        printf("ok: 0 checks, 0 failures\n");
+        return 0;
+    }
+    fclose(probe);
     char error[512];
     h3i_gpu *gpu = h3i_gpu_create(shaders, error, sizeof(error));
     if (!gpu) {

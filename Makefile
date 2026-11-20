@@ -106,7 +106,10 @@ build/tools/%.c.o: tools/%.c
 $(TOOL_BINS): build/%: build/tools/%.c.o build/libh3image.a
 	$(CC) $(CFLAGS) -o $@ $< build/libh3image.a $(LDLIBS)
 
-tests-build: $(TEST_BINS) $(TOOL_BINS)
+# The combined shader file is a runtime prerequisite of every GPU test and
+# tool: build it here too, not only via `all` (make check after make clean
+# must not run tests against a missing build/h3i_shaders.metal).
+tests-build: $(TEST_BINS) $(TOOL_BINS) $(SHADERS)
 
 tools: $(TOOL_BINS)
 
@@ -132,7 +135,7 @@ check: tests-build
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "SOME TESTS FAILED"; fi; \
 	exit $$fail
 
-bench: build/bench_gpu
+bench: build/bench_gpu $(SHADERS)
 	./build/bench_gpu 1024
 else
 check: core-tests
